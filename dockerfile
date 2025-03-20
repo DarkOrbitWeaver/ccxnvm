@@ -2,17 +2,20 @@ FROM python:3.10.6-slim-bullseye
 
 WORKDIR /app
 
-# Install system dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy server files
+COPY server/ ./server/
 COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Run from server directory
+WORKDIR /app/server
 
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
