@@ -28,6 +28,10 @@ public class PersistenceTests {
         Assert.Equal(contact.UserId, contacts[0].UserId);
         Assert.Equal(contact.DisplayName, contacts[0].DisplayName);
         Assert.Equal(contact.ConversationId, contacts[0].ConversationId);
+        Assert.True(contacts[0].IsVerified);
+        Assert.Equal(Convert.ToBase64String(contact.PendingSignPubKey), Convert.ToBase64String(contacts[0].PendingSignPubKey));
+        Assert.Equal(Convert.ToBase64String(contact.PendingDhPubKey), Convert.ToBase64String(contacts[0].PendingDhPubKey));
+        Assert.Equal(contact.KeyChangedAt, contacts[0].KeyChangedAt);
 
         Assert.Single(groups);
         Assert.Equal(group.GroupId, groups[0].GroupId);
@@ -91,6 +95,10 @@ public class PersistenceTests {
             DisplayName = "Bob",
             SignPubKey = signPub,
             DhPubKey = dhPub,
+            PendingSignPubKey = RandomNumberGenerator.GetBytes(91),
+            PendingDhPubKey = RandomNumberGenerator.GetBytes(91),
+            IsVerified = true,
+            KeyChangedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ConversationId = "dm:alice:bob",
             AddedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };

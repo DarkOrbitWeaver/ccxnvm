@@ -8,6 +8,12 @@ The desktop client defaults to:
 
 When the relay is cold-starting or briefly unavailable, the client now keeps retrying in the background and queued outbox messages flush automatically after reconnect.
 
+Direct-contact security improvements:
+
+- manual safety-number verification for direct contacts
+- key-change review that blocks direct sending until you approve the new keys
+- ciphertext padding so the relay learns less from exact message length
+
 ## Relay storage
 
 The relay now supports two storage backends:

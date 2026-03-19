@@ -7,6 +7,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Buffers.Binary;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Konscious.Security.Cryptography;
@@ -37,9 +38,14 @@ public class Contact {
     public string DisplayName { get; set; } = "";
     public byte[] SignPubKey { get; set; } = [];
     public byte[] DhPubKey { get; set; } = [];
+    public byte[] PendingSignPubKey { get; set; } = [];
+    public byte[] PendingDhPubKey { get; set; } = [];
+    public bool IsVerified { get; set; }
+    public long KeyChangedAt { get; set; }
     public bool IsOnline { get; set; }
     public long AddedAt { get; set; }
     public string? ConversationId { get; set; }
+    public bool HasPendingKeyChange => PendingSignPubKey.Length > 0 && PendingDhPubKey.Length > 0;
 }
 
 public class GroupInfo {
@@ -82,6 +88,7 @@ record WireMessage(
 // ═══════════════════════════════════════════════════════════════════════════
 public static class Crypto {
     static readonly JsonSerializerOptions JsonOpts = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    static ReadOnlySpan<byte> PaddedMessageMagic => "C2P1"u8;
 
     // ── Key generation ────────────────────────────────────────────────────
 
@@ -233,12 +240,55 @@ public static class Crypto {
         return b == null ? null : Encoding.UTF8.GetString(b);
     }
 
+    public static string ComputeSafetyNumber(string myUserId, byte[] mySignPub, byte[] myDhPub,
+        string theirUserId, byte[] theirSignPub, byte[] theirDhPub) {
+        var ordered = new[] {
+            (userId: myUserId, sign: mySignPub, dh: myDhPub),
+            (userId: theirUserId, sign: theirSignPub, dh: theirDhPub)
+        }.OrderBy(x => x.userId, StringComparer.Ordinal);
+
+        using var ms = new MemoryStream();
+        foreach (var entry in ordered) {
+            var userBytes = Encoding.UTF8.GetBytes(entry.userId);
+            ms.Write(userBytes);
+            ms.Write(entry.sign);
+            ms.Write(entry.dh);
+        }
+
+        var hash = SHA256.HashData(ms.ToArray());
+        return string.Join(" ",
+            Convert.ToHexString(hash)
+                .Chunk(4)
+                .Select(chunk => new string(chunk)));
+    }
+
+    static byte[] PackMessagePlaintext(string content) {
+        var contentBytes = Encoding.UTF8.GetBytes(content);
+        var payloadLength = 8 + contentBytes.Length;
+        var paddedLength = Math.Max(256, ((payloadLength + 255) / 256) * 256);
+        var packed = RandomNumberGenerator.GetBytes(paddedLength);
+        PaddedMessageMagic.CopyTo(packed);
+        BinaryPrimitives.WriteInt32LittleEndian(packed.AsSpan(4, 4), contentBytes.Length);
+        contentBytes.CopyTo(packed, 8);
+        return packed;
+    }
+
+    static string? UnpackMessagePlaintext(byte[] plaintext) {
+        if (plaintext.Length >= 8 && plaintext.AsSpan(0, 4).SequenceEqual(PaddedMessageMagic)) {
+            var contentLength = BinaryPrimitives.ReadInt32LittleEndian(plaintext.AsSpan(4, 4));
+            if (contentLength < 0 || contentLength > plaintext.Length - 8) return null;
+            return Encoding.UTF8.GetString(plaintext, 8, contentLength);
+        }
+
+        return Encoding.UTF8.GetString(plaintext);
+    }
+
     // ── Message serialization ──────────────────────────────────────────────
 
     /// <summary>Encrypt a message for a DM conversation. Returns wire payload JSON.</summary>
     public static string EncryptDm(byte[] conversationKey, Message msg) {
         var msgKey = DeriveMessageKey(conversationKey, msg.SeqNum);
-        var plain = Encoding.UTF8.GetBytes(msg.Content);
+        var plain = PackMessagePlaintext(msg.Content);
         var (ct, nonce, tag) = Encrypt(msgKey, plain);
         var wire = new WireMessage(
             msg.Id,
@@ -261,10 +311,12 @@ public static class Crypto {
                 Convert.FromBase64String(wire.Nonce),
                 Convert.FromBase64String(wire.Tag));
             if (plain == null) return null;
+            var content = UnpackMessagePlaintext(plain);
+            if (content == null) return null;
             return new Message {
                 Id = wire.Id,
                 SenderId = senderId,
-                Content = Encoding.UTF8.GetString(plain),
+                Content = content,
                 Timestamp = wire.Timestamp,
                 SeqNum = wire.SeqNum,
                 Status = MessageStatus.Delivered,
@@ -276,7 +328,7 @@ public static class Crypto {
     /// <summary>Encrypt message for a group using the group's symmetric key.</summary>
     public static string EncryptGroup(byte[] groupKey, Message msg) {
         var msgKey = DeriveMessageKey(groupKey, msg.SeqNum);
-        var plain = Encoding.UTF8.GetBytes(msg.Content);
+        var plain = PackMessagePlaintext(msg.Content);
         var (ct, nonce, tag) = Encrypt(msgKey, plain);
         var wire = new WireMessage(msg.Id, Convert.ToBase64String(ct),
             Convert.ToBase64String(nonce), Convert.ToBase64String(tag),
@@ -294,11 +346,13 @@ public static class Crypto {
                 Convert.FromBase64String(wire.Nonce),
                 Convert.FromBase64String(wire.Tag));
             if (plain == null) return null;
+            var content = UnpackMessagePlaintext(plain);
+            if (content == null) return null;
             return new Message {
                 Id = wire.Id,
                 ConversationId = groupId,
                 SenderId = senderId,
-                Content = Encoding.UTF8.GetString(plain),
+                Content = content,
                 Timestamp = wire.Timestamp,
                 SeqNum = wire.SeqNum,
                 Status = MessageStatus.Delivered,
@@ -416,6 +470,11 @@ public class Vault : IDisposable {
                 attempts INTEGER NOT NULL DEFAULT 0
             );
         ");
+
+        TryExec("ALTER TABLE contacts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0");
+        TryExec("ALTER TABLE contacts ADD COLUMN pending_sign_pub TEXT");
+        TryExec("ALTER TABLE contacts ADD COLUMN pending_dh_pub TEXT");
+        TryExec("ALTER TABLE contacts ADD COLUMN key_changed_at INTEGER NOT NULL DEFAULT 0");
     }
 
     // ── Identity ───────────────────────────────────────────────────────────
@@ -465,14 +524,19 @@ public class Vault : IDisposable {
     public void SaveContact(Contact c) {
         ExecParam(@"
             INSERT OR REPLACE INTO contacts
-            VALUES (@uid, @name, @sp, @dp, @conv, @ts, @ls)",
+            (user_id, display_name_enc, sign_pub, dh_pub, conversation_id, added_at, last_seen, is_verified, pending_sign_pub, pending_dh_pub, key_changed_at)
+            VALUES (@uid, @name, @sp, @dp, @conv, @ts, @ls, @verified, @psp, @pdp, @changed)",
             ("uid", c.UserId),
             ("name", Crypto.EncryptStr(_key, c.DisplayName)),
             ("sp", Convert.ToBase64String(c.SignPubKey)),
             ("dp", Convert.ToBase64String(c.DhPubKey)),
             ("conv", c.ConversationId ?? ""),
             ("ts", c.AddedAt),
-            ("ls", (object?)null ?? DBNull.Value));
+            ("ls", (object?)null ?? DBNull.Value),
+            ("verified", c.IsVerified ? 1 : 0),
+            ("psp", c.PendingSignPubKey.Length > 0 ? Convert.ToBase64String(c.PendingSignPubKey) : DBNull.Value),
+            ("pdp", c.PendingDhPubKey.Length > 0 ? Convert.ToBase64String(c.PendingDhPubKey) : DBNull.Value),
+            ("changed", c.KeyChangedAt));
     }
 
     public List<Contact> LoadContacts() {
@@ -487,6 +551,10 @@ public class Vault : IDisposable {
                 DisplayName = Crypto.DecryptStr(_key, nameEnc) ?? "???",
                 SignPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("sign_pub"))),
                 DhPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("dh_pub"))),
+                PendingSignPubKey = ReadOptionalBase64(r, "pending_sign_pub"),
+                PendingDhPubKey = ReadOptionalBase64(r, "pending_dh_pub"),
+                IsVerified = TryGetInt32(r, "is_verified") == 1,
+                KeyChangedAt = TryGetInt64(r, "key_changed_at"),
                 ConversationId = r.GetString(r.GetOrdinal("conversation_id")),
                 AddedAt = r.GetInt64(r.GetOrdinal("added_at"))
             });
@@ -628,6 +696,11 @@ public class Vault : IDisposable {
         return next;
     }
 
+    public void ClearConvSecret(string convId) {
+        var (lastSeq, _) = LoadConvState(convId);
+        SaveConvState(convId, lastSeq, null);
+    }
+
     // ── Outbox (reliable delivery even across server restarts) ─────────────
 
     public void EnqueueOutbox(string id, string recipientId, string payload, string sig,
@@ -727,12 +800,43 @@ public class Vault : IDisposable {
         cmd.ExecuteNonQuery();
     }
 
+    void TryExec(string sql) {
+        try {
+            Exec(sql);
+        } catch (SqliteException) {
+        }
+    }
+
     void ExecParam(string sql, params (string name, object? val)[] parms) {
         using var cmd = _db!.CreateCommand();
         cmd.CommandText = sql;
         foreach (var (name, val) in parms)
             cmd.Parameters.AddWithValue("@" + name.TrimStart('@'), val ?? DBNull.Value);
         cmd.ExecuteNonQuery();
+    }
+
+    static byte[] ReadOptionalBase64(SqliteDataReader reader, string column) {
+        var ordinal = reader.GetOrdinal(column);
+        if (reader.IsDBNull(ordinal)) return [];
+        return Convert.FromBase64String(reader.GetString(ordinal));
+    }
+
+    static int TryGetInt32(SqliteDataReader reader, string column) {
+        try {
+            var ordinal = reader.GetOrdinal(column);
+            return reader.IsDBNull(ordinal) ? 0 : reader.GetInt32(ordinal);
+        } catch (IndexOutOfRangeException) {
+            return 0;
+        }
+    }
+
+    static long TryGetInt64(SqliteDataReader reader, string column) {
+        try {
+            var ordinal = reader.GetOrdinal(column);
+            return reader.IsDBNull(ordinal) ? 0 : reader.GetInt64(ordinal);
+        } catch (IndexOutOfRangeException) {
+            return 0;
+        }
     }
 
     public void Dispose() {

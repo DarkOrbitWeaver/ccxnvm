@@ -583,14 +583,47 @@ public partial class MainWindow : Window {
             ? $"group: {conv.DisplayName}"
             : $"dm: {conv.DisplayName} [{conv.ContactData?.UserId[..8]}…]";
 
-        InputBox.IsEnabled = true;
-        BtnSend.IsEnabled = true;
         EmptyState.Visibility = Visibility.Collapsed;
         MessageList.Visibility = Visibility.Visible;
-        InputBox.Focus();
+        UpdateActiveConversationSecurityUi();
+        if (InputBox.IsEnabled) InputBox.Focus();
 
         // Load initial messages
         LoadInitialMessages(conv.Id);
+    }
+
+    void UpdateActiveConversationSecurityUi() {
+        if (_activeConv?.ContactData is not Contact contact) {
+            BtnSecurityReview.Visibility = Visibility.Collapsed;
+            InputBox.IsEnabled = true;
+            BtnSend.IsEnabled = true;
+            return;
+        }
+
+        BtnSecurityReview.Visibility = Visibility.Visible;
+        if (contact.HasPendingKeyChange) {
+            BtnSecurityReview.Content = "[REVIEW]";
+            BtnSecurityReview.BorderBrush = (Brush)FindResource("Red");
+            BtnSecurityReview.Foreground = (Brush)FindResource("Red");
+            BtnSecurityReview.ToolTip = "contact keys changed - review before sending";
+            InputBox.IsEnabled = false;
+            BtnSend.IsEnabled = false;
+            SidebarStatus.Text = $"security review required: {contact.DisplayName}'s relay keys changed";
+            return;
+        }
+
+        BtnSecurityReview.BorderBrush = contact.IsVerified
+            ? (Brush)FindResource("Green")
+            : (Brush)FindResource("Amber");
+        BtnSecurityReview.Foreground = contact.IsVerified
+            ? (Brush)FindResource("Green")
+            : (Brush)FindResource("Amber");
+        BtnSecurityReview.Content = contact.IsVerified ? "[SAFE]" : "[VERIFY]";
+        BtnSecurityReview.ToolTip = contact.IsVerified
+            ? "contact safety number verified"
+            : "compare and verify this contact's safety number";
+        InputBox.IsEnabled = true;
+        BtnSend.IsEnabled = true;
     }
 
     // ── Lazy message loading ───────────────────────────────────────────────
@@ -734,7 +767,9 @@ public partial class MainWindow : Window {
         var contact = _activeConv!.ContactData!;
         if (!await EnsureContactKeysAsync(contact)) {
             vm.Status = MessageStatus.Failed;
-            SidebarStatus.Text = $"can't send yet: {contact.DisplayName} hasn't registered keys with this relay";
+            SidebarStatus.Text = contact.HasPendingKeyChange
+                ? $"can't send until you review {contact.DisplayName}'s new safety number"
+                : $"can't send yet: {contact.DisplayName} hasn't registered keys with this relay";
             return;
         }
         var convKey = GetOrDeriveConvKey(contact);
@@ -802,15 +837,95 @@ public partial class MainWindow : Window {
     // ── Key management ────────────────────────────────────────────────────
 
     async Task<bool> EnsureContactKeysAsync(Contact contact) {
-        if (contact.SignPubKey.Length > 0 && contact.DhPubKey.Length > 0) return true;
+        if (contact.HasPendingKeyChange) return false;
+
+        if (!_net.IsConnected) {
+            return contact.SignPubKey.Length > 0 && contact.DhPubKey.Length > 0;
+        }
 
         var keys = await _net.GetUserKeysAsync(contact.UserId);
-        if (keys == null) return false;
+        if (keys == null) return contact.SignPubKey.Length > 0 && contact.DhPubKey.Length > 0;
 
-        contact.SignPubKey = keys.Value.signPub;
-        contact.DhPubKey = keys.Value.dhPub;
+        if (HasSameKeys(contact.SignPubKey, contact.DhPubKey, keys.Value.signPub, keys.Value.dhPub)) {
+            if (contact.HasPendingKeyChange) {
+                contact.PendingSignPubKey = [];
+                contact.PendingDhPubKey = [];
+                contact.KeyChangedAt = 0;
+                _vault.SaveContact(contact);
+            }
+
+            UpdateActiveConversationSecurityUi();
+            return true;
+        }
+
+        if (contact.SignPubKey.Length == 0 || contact.DhPubKey.Length == 0) {
+            contact.SignPubKey = keys.Value.signPub;
+            contact.DhPubKey = keys.Value.dhPub;
+            contact.PendingSignPubKey = [];
+            contact.PendingDhPubKey = [];
+            contact.KeyChangedAt = 0;
+            _vault.SaveContact(contact);
+            UpdateActiveConversationSecurityUi();
+            return true;
+        }
+
+        contact.PendingSignPubKey = keys.Value.signPub;
+        contact.PendingDhPubKey = keys.Value.dhPub;
+        contact.IsVerified = false;
+        contact.KeyChangedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _vault.SaveContact(contact);
-        return true;
+        CancelQueuedDirectMessages(contact);
+
+        if (_activeConv?.ContactData?.UserId == contact.UserId) {
+            UpdateActiveConversationSecurityUi();
+        }
+
+        SidebarStatus.Text = $"warning: {contact.DisplayName}'s relay keys changed. compare the new safety number before sending.";
+        return false;
+    }
+
+    static bool HasSameKeys(byte[] currentSign, byte[] currentDh, byte[] nextSign, byte[] nextDh) =>
+        currentSign.AsSpan().SequenceEqual(nextSign) &&
+        currentDh.AsSpan().SequenceEqual(nextDh);
+
+    void CancelQueuedDirectMessages(Contact contact) {
+        var pending = _vault.LoadOutbox()
+            .Where(item => item.ConvType == ConversationType.Direct && item.RecipientId == contact.UserId)
+            .ToList();
+
+        foreach (var item in pending) {
+            _vault.RemoveOutbox(item.Id);
+            _vault.UpdateMessageStatus(item.Id, MessageStatus.Failed);
+            var vm = _messages.FirstOrDefault(m => m.Id == item.Id);
+            if (vm != null) vm.Status = MessageStatus.Failed;
+        }
+    }
+
+    string ComputeSafetyNumber(Contact contact, bool usePendingKeys = false) {
+        var signPub = usePendingKeys ? contact.PendingSignPubKey : contact.SignPubKey;
+        var dhPub = usePendingKeys ? contact.PendingDhPubKey : contact.DhPubKey;
+        return Crypto.ComputeSafetyNumber(
+            _user!.UserId, _user.SignPubKey, _user.DhPubKey,
+            contact.UserId, signPub, dhPub);
+    }
+
+    void AcceptPendingContactKeys(Contact contact) {
+        if (!contact.HasPendingKeyChange) return;
+
+        var convId = contact.ConversationId ?? contact.UserId;
+        if (_convKeys.Remove(convId, out var oldSecret) && oldSecret.Length > 0) {
+            Crypto.Wipe(oldSecret);
+        }
+
+        _vault.ClearConvSecret(convId);
+        contact.SignPubKey = contact.PendingSignPubKey;
+        contact.DhPubKey = contact.PendingDhPubKey;
+        contact.PendingSignPubKey = [];
+        contact.PendingDhPubKey = [];
+        contact.IsVerified = true;
+        contact.KeyChangedAt = 0;
+        _vault.SaveContact(contact);
+        UpdateActiveConversationSecurityUi();
     }
 
     byte[]? GetOrDeriveConvKey(Contact contact) {
@@ -1076,6 +1191,66 @@ public partial class MainWindow : Window {
         var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         t.Tick += (_, _) => { BtnMyId.Content = prev; t.Stop(); };
         t.Start();
+    }
+
+    async void BtnSecurityReview_Click(object s, RoutedEventArgs e) {
+        if (_activeConv?.ContactData is not Contact contact || _user == null) return;
+
+        if (contact.SignPubKey.Length == 0 || contact.DhPubKey.Length == 0) {
+            await EnsureContactKeysAsync(contact);
+            if (contact.SignPubKey.Length == 0 || contact.DhPubKey.Length == 0) {
+                MessageBox.Show(
+                    $"{contact.DisplayName} has not published relay keys yet, so there is nothing to verify.",
+                    "Contact Security",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+        }
+
+        if (contact.HasPendingKeyChange) {
+            var current = ComputeSafetyNumber(contact);
+            var pending = ComputeSafetyNumber(contact, usePendingKeys: true);
+            var result = MessageBox.Show(
+                $"The relay reported new keys for {contact.DisplayName}.\n\n" +
+                $"Current pinned safety number:\n{current}\n\n" +
+                $"New reported safety number:\n{pending}\n\n" +
+                "Only accept this change after comparing the new safety number with your contact over another trusted channel.\n\n" +
+                "Click Yes only if you verified it yourself.",
+                "Security Review Required",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result == MessageBoxResult.Yes) {
+                AcceptPendingContactKeys(contact);
+                SidebarStatus.Text = $"{contact.DisplayName} verified with the new safety number";
+            }
+
+            return;
+        }
+
+        var safetyNumber = ComputeSafetyNumber(contact);
+        if (contact.IsVerified) {
+            MessageBox.Show(
+                $"{contact.DisplayName} is currently verified.\n\nSafety number:\n{safetyNumber}",
+                "Verified Contact",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var verify = MessageBox.Show(
+            $"Compare this safety number with {contact.DisplayName} over another trusted channel before marking them verified.\n\n{safetyNumber}",
+            "Verify Contact",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (verify == MessageBoxResult.Yes) {
+            contact.IsVerified = true;
+            _vault.SaveContact(contact);
+            SidebarStatus.Text = $"{contact.DisplayName} marked as verified";
+            UpdateActiveConversationSecurityUi();
+        }
     }
 
     // ── NUKE ──────────────────────────────────────────────────────────────

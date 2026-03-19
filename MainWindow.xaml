@@ -159,6 +159,7 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <!-- Status dot + app name -->
@@ -177,18 +178,25 @@
                                VerticalAlignment="Center" Margin="16,0"
                                TextTrimming="CharacterEllipsis"/>
 
+                    <Button x:Name="BtnSecurityReview" Grid.Column="2" Content="[VERIFY]"
+                            Style="{StaticResource TermBtn}"
+                            FontSize="9" Padding="6,3" Margin="0,0,6,0"
+                            Click="BtnSecurityReview_Click"
+                            ToolTip="Review and verify this contact"
+                            Visibility="Collapsed"/>
+
                     <!-- My user ID (clickable to copy) -->
-                    <Button x:Name="BtnMyId" Grid.Column="2" Style="{StaticResource TermBtn}"
+                    <Button x:Name="BtnMyId" Grid.Column="3" Style="{StaticResource TermBtn}"
                             FontSize="9" Padding="6,3" Margin="0,0,6,0"
                             Click="BtnMyId_Click" ToolTip="Click to copy your ID"/>
 
                     <!-- Add contact -->
-                    <Button Grid.Column="3" Content="[+]" Style="{StaticResource TermBtn}"
+                    <Button Grid.Column="4" Content="[+]" Style="{StaticResource TermBtn}"
                             FontSize="11" Padding="8,4" Margin="0,0,6,0"
                             Click="BtnAddContact_Click" ToolTip="Add contact or create group"/>
 
                     <!-- NUKE -->
-                    <Button Grid.Column="4" Content="[☢ NUKE]" Style="{StaticResource NukeBtn}"
+                    <Button Grid.Column="5" Content="[☢ NUKE]" Style="{StaticResource NukeBtn}"
                             FontSize="10" Click="BtnNuke_Click"
                             ToolTip="Permanently destroy vault and wipe all data"/>
                 </Grid>

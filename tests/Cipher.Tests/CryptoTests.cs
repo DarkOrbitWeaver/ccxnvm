@@ -27,4 +27,28 @@ public class CryptoTests {
 
         Assert.Null(Crypto.DecryptField(key, packed));
     }
+
+    [Fact]
+    public void MessagePaddingHidesExactLengthInsideBucket() {
+        var key = RandomNumberGenerator.GetBytes(32);
+        var shortMsg = new Message {
+            Id = "same-id",
+            Content = "a",
+            SeqNum = 1,
+            Timestamp = 1
+        };
+        var longerMsg = new Message {
+            Id = "same-id",
+            Content = new string('b', 120),
+            SeqNum = 1,
+            Timestamp = 1
+        };
+
+        var shortPayload = Crypto.EncryptDm(key, shortMsg);
+        var longerPayload = Crypto.EncryptDm(key, longerMsg);
+
+        Assert.Equal(shortPayload.Length, longerPayload.Length);
+        Assert.Equal("a", Crypto.DecryptDm(key, "bob", shortPayload)!.Content);
+        Assert.Equal(new string('b', 120), Crypto.DecryptDm(key, "bob", longerPayload)!.Content);
+    }
 }
