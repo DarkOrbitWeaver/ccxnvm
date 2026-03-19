@@ -1,9 +1,9 @@
 services:
   - type: web
     name: cipher-relay
-    runtime: dotnet
+    runtime: docker
     plan: free
     rootDir: server
-    buildCommand: dotnet publish CipherServer.csproj -c Release -o out
-    startCommand: dotnet out/CipherServer.dll
+    dockerfilePath: server/Dockerfile
+    dockerContext: .
     healthCheckPath: /health
