@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="CIPHER" Height="620" Width="900"
         MinHeight="480" MinWidth="700"
+        Icon="Assets/48x48.ico"
         Background="#0C0C0C"
         WindowStyle="SingleBorderWindow"
         FontFamily="Consolas"
@@ -44,7 +45,7 @@
                            Margin="0,0,0,10" Text="CIPHER"/>
 
                 <TextBlock FontSize="10" Foreground="#444444" HorizontalAlignment="Center"
-                           Margin="0,0,0,32">zero-trust · end-to-end encrypted · no metadata</TextBlock>
+                           Margin="0,0,0,32">zero-trust relay · end-to-end encrypted content · minimal trust</TextBlock>
 
                 <!-- Status/error message -->
                 <TextBlock x:Name="AuthStatus" FontSize="11" Foreground="#FF3333"
@@ -81,7 +82,15 @@
                         > relay server url
                     </TextBlock>
                     <TextBox x:Name="LoginServerUrl" Style="{StaticResource TermInput}"
-                             Margin="0,0,0,16"/>
+                             Margin="0,0,0,4"/>
+                    <TextBlock FontSize="9" Foreground="#333333" Margin="0,0,0,16">
+                        https for remote relays; http only for localhost dev
+                    </TextBlock>
+                    <CheckBox x:Name="LoginRememberSession"
+                              Content="remember this device (faster, less secure)"
+                              IsChecked="False"
+                              Foreground="#555555"
+                              Margin="0,0,0,16"/>
                     <Button Content="[ UNLOCK VAULT ]" Style="{StaticResource TermBtn}"
                             FontSize="12" Padding="0,10" Click="BtnLogin_Click"
                             x:Name="BtnLogin"/>
@@ -111,7 +120,15 @@
                         > relay server url
                     </TextBlock>
                     <TextBox x:Name="RegServerUrl" Style="{StaticResource TermInput}"
-                             Margin="0,0,0,16"/>
+                             Margin="0,0,0,4"/>
+                    <TextBlock FontSize="9" Foreground="#333333" Margin="0,0,0,16">
+                        https for remote relays; http only for localhost dev
+                    </TextBlock>
+                    <CheckBox x:Name="RegisterRememberSession"
+                              Content="remember this device (faster, less secure)"
+                              IsChecked="False"
+                              Foreground="#555555"
+                              Margin="0,0,0,16"/>
                     <Button Content="[ CREATE VAULT ]" Style="{StaticResource TermBtn}"
                             FontSize="12" Padding="0,10" Click="BtnRegister_Click"
                             x:Name="BtnRegister"/>
@@ -150,6 +167,8 @@
                                    Foreground="#FF3333" Margin="0,0,6,0" VerticalAlignment="Center"/>
                         <TextBlock x:Name="HeaderBrandText" Text="CIPHER" FontSize="12" FontWeight="Bold"
                                    Foreground="#00FF41" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="ConnStatusText" Text="offline" FontSize="10"
+                                   Foreground="#555555" Margin="8,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
 
                     <!-- Active conversation name -->
@@ -420,6 +439,9 @@
                                 Style="{StaticResource TermBtn}" Click="TabAddGroup_Click"/>
                     </Grid>
 
+                    <TextBlock x:Name="AddStatus" FontSize="10" Foreground="#FF3333"
+                               Margin="0,0,0,8" TextWrapping="Wrap" Visibility="Collapsed"/>
+
                     <!-- Add DM contact -->
                     <StackPanel x:Name="AddDmForm">
                         <TextBlock FontSize="10" Foreground="#555555" Margin="0,0,0,4">
@@ -432,8 +454,6 @@
                         </TextBlock>
                         <TextBox x:Name="AddContactName" Style="{StaticResource TermInput}"
                                  Margin="0,0,0,16"/>
-                        <TextBlock x:Name="AddStatus" FontSize="10" Foreground="#FF3333"
-                                   Margin="0,0,0,8" TextWrapping="Wrap" Visibility="Collapsed"/>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition/>

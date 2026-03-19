@@ -188,9 +188,9 @@ public static class Crypto {
     public static string SignPayload(byte[] privKey, string payload, long seqNum) =>
         Sign(privKey, $"{payload}:{seqNum}");
 
-    /// <summary>Sign userId for registration proof-of-ownership.</summary>
-    public static string SignRegistration(byte[] privKey, string userId) =>
-        Sign(privKey, userId);
+    /// <summary>Bind registration to both the identity and DH public key.</summary>
+    public static string SignRegistration(byte[] privKey, string userId, string dhPubKey) =>
+        Sign(privKey, $"{userId}:{dhPubKey}");
 
     /// <summary>Verify ECDSA P-256 signature against public key.</summary>
     public static bool Verify(byte[] pubKey, string data, string sig) {
@@ -342,7 +342,7 @@ public class Vault : IDisposable {
 
     public void Open(string path, byte[] vaultKey) {
         _path = path;
-        _key = vaultKey;
+        _key = vaultKey.ToArray();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         _db = new SqliteConnection($"Data Source={path};");
         _db.Open();
@@ -791,9 +791,17 @@ public static class Session {
 // ═══════════════════════════════════════════════════════════════════════════
 //  NETWORK CLIENT — SignalR real-time relay with auto-reconnect
 // ═══════════════════════════════════════════════════════════════════════════
+public enum RelayConnectionState { Disconnected, Connecting, Reconnecting, Connected }
+
 public class NetworkClient : IAsyncDisposable {
     HubConnection? _hub;
     LocalUser? _user;
+    readonly SemaphoreSlim _connectGate = new(1, 1);
+    readonly CancellationTokenSource _lifetimeCts = new();
+    Task? _retryLoop;
+    Task? _heartbeatLoop;
+    int _retryAttempt;
+    bool _disposed;
 
     public bool IsConnected => _hub?.State == HubConnectionState.Connected;
     public event Action<string, string, string, long, long>? OnMessage; // senderId, payload, sig, seq, ts
@@ -802,12 +810,24 @@ public class NetworkClient : IAsyncDisposable {
     public event Action? OnConnected;
     public event Action? OnDisconnected;
     public event Action<string>? OnError;
+    public event Action<RelayConnectionState, string?>? OnStateChanged;
 
     public async Task ConnectAsync(LocalUser user) {
         _user = user;
+        var serverUrl = RelayUrl.Normalize(user.ServerUrl);
+
+        if (!RelayUrl.IsValid(serverUrl)) {
+            OnError?.Invoke(RelayUrl.ValidationHint);
+            return;
+        }
+
+        if (_hub != null) {
+            await _hub.DisposeAsync();
+            _hub = null;
+        }
 
         _hub = new HubConnectionBuilder()
-            .WithUrl(user.ServerUrl.TrimEnd('/') + "/hub")
+            .WithUrl(serverUrl.TrimEnd('/') + "/hub")
             .WithAutomaticReconnect(new[] {
                 TimeSpan.Zero,
                 TimeSpan.FromSeconds(2),
@@ -816,6 +836,8 @@ public class NetworkClient : IAsyncDisposable {
                 TimeSpan.FromSeconds(30)
             })
             .Build();
+        _hub.ServerTimeout = TimeSpan.FromSeconds(30);
+        _hub.KeepAliveInterval = TimeSpan.FromSeconds(10);
 
         // Wire up incoming message handlers
         _hub.On<string, string, string, long, long>("Receive",
@@ -827,37 +849,40 @@ public class NetworkClient : IAsyncDisposable {
         _hub.On<string>("UserOnline", uid => OnUserOnline?.Invoke(uid));
 
         _hub.Reconnecting += ex => {
+            RaiseState(RelayConnectionState.Reconnecting, "relay connection lost - retrying...");
             OnDisconnected?.Invoke();
             return Task.CompletedTask;
         };
 
         _hub.Reconnected += async connectionId => {
             await RegisterAsync();
+            _retryAttempt = 0;
+            RaiseState(RelayConnectionState.Connected, "relay connected");
             OnConnected?.Invoke();
         };
 
         _hub.Closed += ex => {
+            if (_disposed || _lifetimeCts.IsCancellationRequested) return Task.CompletedTask;
+            RaiseState(RelayConnectionState.Disconnected, "relay offline - retrying in background...");
             OnDisconnected?.Invoke();
+            EnsureRetryLoop();
             return Task.CompletedTask;
         };
 
-        try {
-            await _hub.StartAsync();
-            await RegisterAsync();
-            OnConnected?.Invoke();
-        } catch (Exception ex) {
-            OnError?.Invoke($"Connection failed: {ex.Message}");
-        }
+        RaiseState(RelayConnectionState.Connecting, "connecting to relay...");
+        _heartbeatLoop ??= RunHeartbeatLoopAsync();
+        await EnsureConnectedAsync(fromRetryLoop: false, _lifetimeCts.Token);
     }
 
     /// <summary>Re-register keys with server after connect/reconnect.</summary>
     async Task RegisterAsync() {
         if (_hub == null || _user == null) return;
-        var selfSig = Crypto.SignRegistration(_user.SignPrivKey, _user.UserId);
+        var dhPubKey = Convert.ToBase64String(_user.DhPubKey);
+        var selfSig = Crypto.SignRegistration(_user.SignPrivKey, _user.UserId, dhPubKey);
         await _hub.InvokeAsync("Register",
             _user.UserId,
             Convert.ToBase64String(_user.SignPubKey),
-            Convert.ToBase64String(_user.DhPubKey),
+            dhPubKey,
             selfSig);
     }
 
@@ -897,6 +922,26 @@ public class NetworkClient : IAsyncDisposable {
         } catch { return null; }
     }
 
+    public async Task<bool> AckDmAsync(string senderId, long seqNum) {
+        if (!IsConnected) return false;
+        try {
+            await _hub!.InvokeAsync("AckDirect", senderId, seqNum);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    public async Task<bool> AckGroupAsync(string groupId, string senderId, long seqNum) {
+        if (!IsConnected) return false;
+        try {
+            await _hub!.InvokeAsync("AckGroup", groupId, senderId, seqNum);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
     /// <summary>Announce presence to contacts (so they see us go online).</summary>
     public async Task AnnouncePresenceAsync(List<string> contactIds) {
         if (!IsConnected || contactIds.Count == 0) return;
@@ -904,8 +949,106 @@ public class NetworkClient : IAsyncDisposable {
         catch { }
     }
 
+    async Task EnsureConnectedAsync(bool fromRetryLoop, CancellationToken cancellationToken) {
+        if (_hub == null || _disposed) return;
+
+        await _connectGate.WaitAsync(cancellationToken);
+        try {
+            if (_hub == null || _disposed) return;
+            if (_hub.State is HubConnectionState.Connected or HubConnectionState.Connecting or HubConnectionState.Reconnecting)
+                return;
+
+            await _hub.StartAsync(cancellationToken);
+            await RegisterAsync();
+            _retryAttempt = 0;
+            RaiseState(RelayConnectionState.Connected, "relay connected");
+            OnConnected?.Invoke();
+        } catch (OperationCanceledException) {
+        } catch (Exception) {
+            if (_disposed || _lifetimeCts.IsCancellationRequested) return;
+            if (!fromRetryLoop) {
+                OnError?.Invoke("relay unavailable or waking up - retrying in background...");
+            }
+            RaiseState(RelayConnectionState.Disconnected, "relay unavailable - retrying...");
+            EnsureRetryLoop();
+        } finally {
+            _connectGate.Release();
+        }
+    }
+
+    void EnsureRetryLoop() {
+        if (_hub == null || _disposed || _lifetimeCts.IsCancellationRequested) return;
+        if (_retryLoop is { IsCompleted: false }) return;
+
+        _retryLoop = Task.Run(async () => {
+            while (!_disposed && !_lifetimeCts.IsCancellationRequested && !IsConnected) {
+                var delay = GetRetryDelay(++_retryAttempt);
+                RaiseState(RelayConnectionState.Reconnecting, $"relay offline - retrying in {(int)delay.TotalSeconds}s...");
+                try {
+                    await Task.Delay(delay, _lifetimeCts.Token);
+                } catch (OperationCanceledException) {
+                    break;
+                }
+
+                await EnsureConnectedAsync(fromRetryLoop: true, _lifetimeCts.Token);
+            }
+        });
+    }
+
+    static TimeSpan GetRetryDelay(int attempt) => attempt switch {
+        <= 1 => TimeSpan.FromSeconds(3),
+        2 => TimeSpan.FromSeconds(5),
+        3 => TimeSpan.FromSeconds(10),
+        4 => TimeSpan.FromSeconds(15),
+        _ => TimeSpan.FromSeconds(30)
+    };
+
+    void RaiseState(RelayConnectionState state, string? detail) =>
+        OnStateChanged?.Invoke(state, detail);
+
+    async Task RunHeartbeatLoopAsync() {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(12));
+        try {
+            while (await timer.WaitForNextTickAsync(_lifetimeCts.Token)) {
+                if (_hub == null || _disposed || !IsConnected) continue;
+
+                try {
+                    var pingTask = _hub.InvokeAsync<long>("Ping", _lifetimeCts.Token);
+                    var completed = await Task.WhenAny(
+                        pingTask,
+                        Task.Delay(TimeSpan.FromSeconds(5), _lifetimeCts.Token));
+                    if (completed != pingTask) {
+                        throw new TimeoutException("Relay heartbeat timed out.");
+                    }
+                    await pingTask;
+                } catch {
+                    if (_hub.State != HubConnectionState.Connected) continue;
+                    RaiseState(RelayConnectionState.Reconnecting, "relay unreachable - retrying...");
+                    OnDisconnected?.Invoke();
+                    try {
+                        await _hub.StopAsync(_lifetimeCts.Token);
+                    } catch {
+                    }
+                    EnsureRetryLoop();
+                }
+            }
+        } catch (OperationCanceledException) {
+        }
+    }
+
     public async ValueTask DisposeAsync() {
+        if (_disposed) return;
+        _disposed = true;
+        _lifetimeCts.Cancel();
+        if (_retryLoop != null) {
+            try { await _retryLoop; } catch { }
+        }
+        if (_heartbeatLoop != null) {
+            try { await _heartbeatLoop; } catch { }
+        }
         if (_hub != null) await _hub.DisposeAsync();
+        _connectGate.Dispose();
+        _lifetimeCts.Dispose();
     }
 
     record KeyBundleDto(
@@ -914,3 +1057,4 @@ public class NetworkClient : IAsyncDisposable {
         [property: JsonPropertyName("dhPubKey")] string DhPubKey,
         [property: JsonPropertyName("registeredAt")] long RegisteredAt);
 }
+

@@ -7,3 +7,4 @@ server/obj/
 server/out/
 *.user
 *.suo
+.env.render.local

@@ -9,44 +9,57 @@ if (int.TryParse(Environment.GetEnvironmentVariable("PORT"), out var port)) {
     builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 }
 
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton(RelayStoreOptions.FromEnvironment());
+builder.Services.AddSingleton<IRelayStore>(sp => RelayStoreFactory.Create(
+    sp.GetRequiredService<RelayStoreOptions>(),
+    sp.GetRequiredService<IHttpClientFactory>(),
+    sp.GetRequiredService<ILoggerFactory>()));
 builder.Services.AddSignalR(options => {
     options.MaximumReceiveMessageSize = 64 * 1024;
     options.EnableDetailedErrors = false;
     options.KeepAliveInterval = TimeSpan.FromSeconds(15);
     options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
 });
-builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
-    policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
 
-app.UseCors();
+using (var scope = app.Services.CreateScope()) {
+    var store = scope.ServiceProvider.GetRequiredService<IRelayStore>();
+    await store.InitializeAsync();
+}
+
 app.MapGet("/", () => "CIPHER RELAY ONLINE");
 app.MapMethods("/", ["HEAD"], () => Results.Ok());
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/health", (IRelayStore store) => Results.Ok(new { status = "ok", storage = store.Name }));
 app.MapHub<CipherHub>("/hub");
 app.Run();
 
 static class RelayState {
     public static readonly ConcurrentDictionary<string, string> Connections = new();
     public static readonly ConcurrentDictionary<string, string> ConnUsers = new();
-    public static readonly ConcurrentDictionary<string, KeyBundle> Keys = new();
-    public static readonly ConcurrentDictionary<string, ConcurrentQueue<OfflineMsg>> Offline = new();
-    public static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, long>> DirectSeqTracker = new();
-    public static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, long>> GroupSeqTracker = new();
-}
-
-enum OfflineMessageKind {
-    Direct,
-    Group
 }
 
 public record KeyBundle(string UserId, string SignPubKey, string DhPubKey, long RegisteredAt);
-record OfflineMsg(OfflineMessageKind Kind, string SenderId, string Payload, string Sig, long SeqNum, long Ts, string? GroupId = null);
 
 public class CipherHub : Hub {
+    readonly IRelayStore _store;
+    readonly RelayStoreOptions _options;
+
+    public CipherHub(IRelayStore store, RelayStoreOptions options) {
+        _store = store;
+        _options = options;
+    }
+
     public async Task Register(string userId, string signPubKey, string dhPubKey, string selfSig) {
-        if (!VerifyRegistration(userId, signPubKey, selfSig)) {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        await _store.CleanupAsync(now);
+
+        if (await IsRateLimitedAsync("register", 20, TimeSpan.FromMinutes(1))) {
+            throw new HubException("RATE_LIMITED");
+        }
+
+        if (!VerifyRegistration(userId, signPubKey, dhPubKey, selfSig)) {
             throw new HubException("INVALID_SIGNATURE");
         }
 
@@ -56,32 +69,32 @@ public class CipherHub : Hub {
 
         RelayState.Connections[userId] = Context.ConnectionId;
         RelayState.ConnUsers[Context.ConnectionId] = userId;
-        RelayState.Keys[userId] = new KeyBundle(
+
+        await _store.UpsertKeyBundleAsync(new KeyBundle(
             userId,
             signPubKey,
             dhPubKey,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            now));
 
-        if (RelayState.Offline.TryGetValue(userId, out var queue)) {
-            while (queue.TryDequeue(out var msg)) {
-                if (msg.Kind == OfflineMessageKind.Group && !string.IsNullOrWhiteSpace(msg.GroupId)) {
-                    await Clients.Caller.SendAsync(
-                        "ReceiveGroup",
-                        msg.GroupId,
-                        msg.SenderId,
-                        msg.Payload,
-                        msg.Sig,
-                        msg.SeqNum,
-                        msg.Ts);
-                } else {
-                    await Clients.Caller.SendAsync(
-                        "Receive",
-                        msg.SenderId,
-                        msg.Payload,
-                        msg.Sig,
-                        msg.SeqNum,
-                        msg.Ts);
-                }
+        var pending = await _store.GetPendingMessagesAsync(userId, 200, now);
+        foreach (var msg in pending) {
+            if (msg.Kind == RelayMessageKind.Group && !string.IsNullOrWhiteSpace(msg.GroupId)) {
+                await Clients.Caller.SendAsync(
+                    "ReceiveGroup",
+                    msg.GroupId,
+                    msg.SenderId,
+                    msg.Payload,
+                    msg.Sig,
+                    msg.SeqNum,
+                    msg.Ts);
+            } else {
+                await Clients.Caller.SendAsync(
+                    "Receive",
+                    msg.SenderId,
+                    msg.Payload,
+                    msg.Sig,
+                    msg.SeqNum,
+                    msg.Ts);
             }
         }
     }
@@ -89,70 +102,87 @@ public class CipherHub : Hub {
     public async Task Send(string recipientId, string payload, string sig, long seqNum) {
         var senderId = GetCallerId();
         if (senderId == null) throw new HubException("NOT_REGISTERED");
+        if (await IsRateLimitedAsync($"dm:{senderId}", 240, TimeSpan.FromMinutes(1)))
+            throw new HubException("RATE_LIMITED");
         if (!IsValidMessageEnvelope(recipientId, payload, sig))
             throw new HubException("INVALID_PAYLOAD");
-
-        if (!VerifyMessage(senderId, payload, sig, seqNum))
+        if (!await VerifyMessageAsync(senderId, payload, sig, seqNum))
             throw new HubException("INVALID_SIGNATURE");
 
-        var senderSeqs = RelayState.DirectSeqTracker.GetOrAdd(recipientId, _ => new());
-        if (senderSeqs.TryGetValue(senderId, out var lastSeq) && seqNum <= lastSeq)
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var expiresAt = now + (long)TimeSpan.FromDays(_options.PendingTtlDays).TotalMilliseconds;
+        var stored = await _store.TryStoreDirectAsync(recipientId, senderId, payload, sig, seqNum, now, expiresAt);
+        if (!stored)
             throw new HubException("REPLAY_REJECTED");
-        senderSeqs[senderId] = seqNum;
-
-        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         if (RelayState.Connections.TryGetValue(recipientId, out var connId)) {
-            await Clients.Client(connId).SendAsync("Receive", senderId, payload, sig, seqNum, ts);
-        } else {
-            var queue = RelayState.Offline.GetOrAdd(recipientId, _ => new ConcurrentQueue<OfflineMsg>());
-            if (queue.Count >= 200) queue.TryDequeue(out _);
-            queue.Enqueue(new OfflineMsg(OfflineMessageKind.Direct, senderId, payload, sig, seqNum, ts));
+            await Clients.Client(connId).SendAsync("Receive", senderId, payload, sig, seqNum, now);
         }
     }
 
     public async Task SendGroup(string groupId, List<string> recipientIds, string payload, string sig, long seqNum) {
         var senderId = GetCallerId();
         if (senderId == null) throw new HubException("NOT_REGISTERED");
+        if (await IsRateLimitedAsync($"grp:{senderId}", 120, TimeSpan.FromMinutes(1)))
+            throw new HubException("RATE_LIMITED");
         if (!IsValidGroupRequest(groupId, recipientIds, payload, sig))
             throw new HubException("INVALID_PAYLOAD");
-        if (!VerifyMessage(senderId, payload, sig, seqNum)) throw new HubException("INVALID_SIGNATURE");
+        if (!await VerifyMessageAsync(senderId, payload, sig, seqNum))
+            throw new HubException("INVALID_SIGNATURE");
         if (recipientIds.Count > 100) throw new HubException("TOO_MANY_RECIPIENTS");
 
-        var senderSeqs = RelayState.GroupSeqTracker.GetOrAdd(groupId, _ => new());
-        if (senderSeqs.TryGetValue(senderId, out var lastSeq) && seqNum <= lastSeq)
+        var uniqueRecipients = recipientIds
+            .Where(id => id != senderId)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var expiresAt = now + (long)TimeSpan.FromDays(_options.PendingTtlDays).TotalMilliseconds;
+        var stored = await _store.TryStoreGroupAsync(groupId, uniqueRecipients, senderId, payload, sig, seqNum, now, expiresAt);
+        if (!stored)
             throw new HubException("REPLAY_REJECTED");
-        senderSeqs[senderId] = seqNum;
 
-        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-        foreach (var recipientId in recipientIds.Distinct()) {
-            if (recipientId == senderId) continue;
-
+        foreach (var recipientId in uniqueRecipients) {
             if (RelayState.Connections.TryGetValue(recipientId, out var connId)) {
-                await Clients.Client(connId).SendAsync("ReceiveGroup", groupId, senderId, payload, sig, seqNum, ts);
-            } else {
-                var queue = RelayState.Offline.GetOrAdd(recipientId, _ => new ConcurrentQueue<OfflineMsg>());
-                if (queue.Count >= 200) queue.TryDequeue(out _);
-                queue.Enqueue(new OfflineMsg(OfflineMessageKind.Group, senderId, payload, sig, seqNum, ts, groupId));
+                await Clients.Client(connId).SendAsync("ReceiveGroup", groupId, senderId, payload, sig, seqNum, now);
             }
         }
     }
 
-    public Task<KeyBundle?> GetKeys(string userId) {
-        RelayState.Keys.TryGetValue(userId, out var keys);
-        return Task.FromResult(keys);
+    public async Task AckDirect(string senderId, long seqNum) {
+        var recipientId = GetCallerId();
+        if (recipientId == null) throw new HubException("NOT_REGISTERED");
+        if (!IsValidToken(senderId, 8, 128)) throw new HubException("INVALID_ID");
+        await _store.AckDirectAsync(recipientId, senderId, seqNum);
+    }
+
+    public async Task AckGroup(string groupId, string senderId, long seqNum) {
+        var recipientId = GetCallerId();
+        if (recipientId == null) throw new HubException("NOT_REGISTERED");
+        if (!IsValidToken(groupId, 8, 128) || !IsValidToken(senderId, 8, 128))
+            throw new HubException("INVALID_ID");
+        await _store.AckGroupAsync(recipientId, groupId, senderId, seqNum);
+    }
+
+    public async Task<KeyBundle?> GetKeys(string userId) {
+        if (!IsValidToken(userId, 8, 128)) return null;
+        if (await IsRateLimitedAsync("keys", 240, TimeSpan.FromMinutes(1)))
+            throw new HubException("RATE_LIMITED");
+        return await _store.GetKeyBundleAsync(userId);
     }
 
     public async Task AnnouncePresence(List<string> contactIds) {
         var me = GetCallerId();
         if (me == null) return;
+        if (await IsRateLimitedAsync($"presence:{me}", 60, TimeSpan.FromMinutes(1))) return;
 
-        foreach (var contactId in contactIds.Take(200)) {
+        foreach (var contactId in contactIds.Where(id => IsValidToken(id, 8, 128)).Take(200)) {
             if (RelayState.Connections.TryGetValue(contactId, out var connId))
                 await Clients.Client(connId).SendAsync("UserOnline", me);
         }
     }
+
+    public long Ping() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     public override async Task OnDisconnectedAsync(Exception? exception) {
         if (RelayState.ConnUsers.TryRemove(Context.ConnectionId, out var userId)) {
@@ -176,7 +206,11 @@ public class CipherHub : Hub {
         try {
             var signBytes = Convert.FromBase64String(signPubKey);
             var dhBytes = Convert.FromBase64String(dhPubKey);
-            return signBytes.Length >= 64 && dhBytes.Length >= 64;
+            using var ecdsa = ECDsa.Create();
+            ecdsa.ImportSubjectPublicKeyInfo(signBytes, out _);
+            using var ecdh = ECDiffieHellman.Create();
+            ecdh.ImportSubjectPublicKeyInfo(dhBytes, out _);
+            return true;
         } catch {
             return false;
         }
@@ -220,9 +254,17 @@ public class CipherHub : Hub {
         return userId;
     }
 
-    static bool VerifyMessage(string senderId, string payload, string sig, long seqNum) {
+    async Task<bool> IsRateLimitedAsync(string bucket, int limit, TimeSpan window) {
+        var clientKey = Context.GetHttpContext()?.Connection.RemoteIpAddress?.ToString()
+            ?? Context.ConnectionId;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return !await _store.AllowRequestAsync($"{bucket}:{clientKey}", limit, window, now);
+    }
+
+    async Task<bool> VerifyMessageAsync(string senderId, string payload, string sig, long seqNum) {
         try {
-            if (!RelayState.Keys.TryGetValue(senderId, out var keys)) return false;
+            var keys = await _store.GetKeyBundleAsync(senderId);
+            if (keys == null) return false;
             var pubKeyBytes = Convert.FromBase64String(keys.SignPubKey);
             using var ecdsa = ECDsa.Create();
             ecdsa.ImportSubjectPublicKeyInfo(pubKeyBytes, out _);
@@ -233,7 +275,7 @@ public class CipherHub : Hub {
         }
     }
 
-    static bool VerifyRegistration(string userId, string signPubKey, string selfSig) {
+    static bool VerifyRegistration(string userId, string signPubKey, string dhPubKey, string selfSig) {
         try {
             var pubKeyBytes = Convert.FromBase64String(signPubKey);
             var expectedId = Convert.ToBase64String(SHA256.HashData(pubKeyBytes))
@@ -244,7 +286,7 @@ public class CipherHub : Hub {
             using var ecdsa = ECDsa.Create();
             ecdsa.ImportSubjectPublicKeyInfo(pubKeyBytes, out _);
             return ecdsa.VerifyData(
-                Encoding.UTF8.GetBytes(userId),
+                Encoding.UTF8.GetBytes($"{userId}:{dhPubKey}"),
                 Convert.FromBase64String(selfSig),
                 HashAlgorithmName.SHA256);
         } catch {

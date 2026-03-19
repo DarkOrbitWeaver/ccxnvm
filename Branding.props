@@ -4,6 +4,7 @@
     <Product>Cipher</Product>
     <Company>DarkOrbitWeaver</Company>
     <Description>Private end-to-end encrypted chat client.</Description>
-    <BrandingIcon>Assets\AppIcon.ico</BrandingIcon>
+    <BrandingIcon>Assets\256x256.ico</BrandingIcon>
+    <WindowIcon>Assets\48x48.ico</WindowIcon>
   </PropertyGroup>
 </Project>

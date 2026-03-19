@@ -155,6 +155,8 @@ public partial class MainWindow : Window {
         ApplyBranding();
         MessageList.ItemsSource = _messages;
         ConvList.ItemsSource = _convs;
+        LoginRememberSession.IsChecked = Session.HasSession();
+        RegisterRememberSession.IsChecked = false;
 
         // Hook scroll event for lazy loading (set after list renders)
         MessageList.Loaded += (_, _) => {
@@ -245,11 +247,11 @@ public partial class MainWindow : Window {
 
     async void BtnLogin_Click(object s, RoutedEventArgs e) {
         var pass = LoginPass.Password;
-        var serverUrl = NormalizeServerUrl(LoginServerUrl.Text);
+        var serverUrl = RelayUrl.Normalize(LoginServerUrl.Text);
         if (string.IsNullOrEmpty(pass)) { SetAuthStatus("enter password", true); return; }
         if (!System.IO.File.Exists(Vault.SaltPath)) { SetAuthStatus("no vault found — create one", true); return; }
 
-        if (!IsValidServerUrl(serverUrl)) { SetAuthStatus("enter a valid http(s) server url", true); return; }
+        if (!RelayUrl.IsValid(serverUrl)) { SetAuthStatus(RelayUrl.ValidationHint, true); return; }
         SetAuthStatus("deriving key (this takes ~2s)...", false);
         BtnLogin.IsEnabled = false;
 
@@ -272,7 +274,8 @@ public partial class MainWindow : Window {
                 _vault.SaveIdentity(_user);
             }
 
-            Session.Save(key); // Save for auto-login
+            if (LoginRememberSession.IsChecked == true) Session.Save(key);
+            else Session.Clear();
             await StartChatAsync();
         } catch (Exception ex) {
             _vault.Dispose();
@@ -287,11 +290,11 @@ public partial class MainWindow : Window {
         var pass = RegPass.Password;
         var pass2 = RegPass2.Password;
         var server = RegServerUrl.Text.Trim();
-        var serverUrl = NormalizeServerUrl(server);
+        var serverUrl = RelayUrl.Normalize(server);
 
         if (string.IsNullOrEmpty(name)) { SetAuthStatus("enter a display name", true); return; }
         if (pass != pass2) { SetAuthStatus("passwords do not match", true); return; }
-        if (!IsValidServerUrl(serverUrl)) { SetAuthStatus("enter a valid http(s) server url", true); return; }
+        if (!RelayUrl.IsValid(serverUrl)) { SetAuthStatus(RelayUrl.ValidationHint, true); return; }
         // No other password requirements — Argon2id handles security
 
         SetAuthStatus("generating keys & vault (takes ~3s)...", false);
@@ -326,7 +329,8 @@ public partial class MainWindow : Window {
             _vault.Open(Vault.DefaultVaultPath, key);
             _vault.SaveIdentity(_user);
 
-            Session.Save(key);
+            if (RegisterRememberSession.IsChecked == true) Session.Save(key);
+            else Session.Clear();
             await StartChatAsync();
         } catch (Exception ex) {
             SetAuthStatus($"error: {ex.Message}", true);
@@ -356,6 +360,7 @@ public partial class MainWindow : Window {
 
         // Connect to relay
         WireNetworkEvents();
+        ApplyConnectionState(RelayConnectionState.Connecting, "connecting to relay...");
         await _net.ConnectAsync(_user);
     }
 
@@ -387,9 +392,10 @@ public partial class MainWindow : Window {
         if (_networkEventsWired) return;
         _networkEventsWired = true;
 
+        _net.OnStateChanged += (state, detail) => Dispatcher.InvokeAsync(() =>
+            ApplyConnectionState(state, detail));
+
         _net.OnConnected += () => Dispatcher.InvokeAsync(() => {
-            ConnDot.Text = "●";
-            ConnDot.Foreground = (Brush)FindResource("Green");
             // Announce presence to all contacts
             var ids = _convs.Where(c => !c.IsGroup).Select(c => c.ContactData!.UserId).ToList();
             _ = _net.AnnouncePresenceAsync(ids);
@@ -401,8 +407,6 @@ public partial class MainWindow : Window {
         });
 
         _net.OnDisconnected += () => Dispatcher.InvokeAsync(() => {
-            ConnDot.Text = "●";
-            ConnDot.Foreground = (Brush)FindResource("Red");
             foreach (var c in _convs.Where(c => !c.IsGroup))
                 c.IsOnline = false;
         });
@@ -422,10 +426,51 @@ public partial class MainWindow : Window {
             RunUiTask(() => HandleIncomingGroupAsync(groupId, senderId, payload, sig, seq, ts));
 
         _net.OnError += msg => Dispatcher.InvokeAsync(() => {
-            // Non-fatal: show in status area
-            SidebarStatus.Text = $"! {msg}";
+            if (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text))
+                SidebarStatus.Text = $"! {msg}";
         });
     }
+
+    void ApplyConnectionState(RelayConnectionState state, string? detail) {
+        ConnDot.Text = "●";
+        switch (state) {
+            case RelayConnectionState.Connected:
+                ConnDot.Foreground = (Brush)FindResource("Green");
+                ConnStatusText.Text = "online";
+                ConnStatusText.Foreground = (Brush)FindResource("Green");
+                if (IsTransientRelayStatus(SidebarStatus.Text))
+                    SidebarStatus.Text = "";
+                break;
+            case RelayConnectionState.Connecting:
+                ConnDot.Foreground = (Brush)FindResource("Amber");
+                ConnStatusText.Text = "connecting";
+                ConnStatusText.Foreground = (Brush)FindResource("Amber");
+                if (!string.IsNullOrWhiteSpace(detail) &&
+                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text)))
+                    SidebarStatus.Text = detail;
+                break;
+            case RelayConnectionState.Reconnecting:
+                ConnDot.Foreground = (Brush)FindResource("Amber");
+                ConnStatusText.Text = "retrying";
+                ConnStatusText.Foreground = (Brush)FindResource("Amber");
+                if (!string.IsNullOrWhiteSpace(detail) &&
+                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text)))
+                    SidebarStatus.Text = detail;
+                break;
+            default:
+                ConnDot.Foreground = (Brush)FindResource("Red");
+                ConnStatusText.Text = "offline";
+                ConnStatusText.Foreground = (Brush)FindResource("Red");
+                if (!string.IsNullOrWhiteSpace(detail) &&
+                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text)))
+                    SidebarStatus.Text = detail;
+                break;
+        }
+    }
+
+    static bool IsTransientRelayStatus(string text) =>
+        text.StartsWith("relay ", StringComparison.OrdinalIgnoreCase) ||
+        text.StartsWith("! relay ", StringComparison.OrdinalIgnoreCase);
 
     void RunUiTask(Func<Task> work) {
         _ = Dispatcher.InvokeAsync(work).Task.Unwrap().ContinueWith(t => {
@@ -459,12 +504,18 @@ public partial class MainWindow : Window {
 
         msg.ConversationId = conv.Id;
         msg.IsMine = false;
-        if (TryHandleDirectSystemMessage(contact, msg)) return;
+        if (TryHandleDirectSystemMessage(contact, msg)) {
+            await _net.AckDmAsync(senderId, seq);
+            return;
+        }
 
-        // Deduplicate
-        if (_vault.MessageExists(msg.Id)) return;
+        if (_vault.MessageExists(msg.Id)) {
+            await _net.AckDmAsync(senderId, seq);
+            return;
+        }
 
         _vault.SaveMessage(msg);
+        await _net.AckDmAsync(senderId, seq);
 
         // If this conversation is active, show the message
         if (conv.Id == _activeConvId) {
@@ -499,8 +550,12 @@ public partial class MainWindow : Window {
 
         msg.ConversationId = groupId;
         msg.IsMine = false;
-        if (_vault.MessageExists(msg.Id)) return;
+        if (_vault.MessageExists(msg.Id)) {
+            await _net.AckGroupAsync(groupId, senderId, seq);
+            return;
+        }
         _vault.SaveMessage(msg);
+        await _net.AckGroupAsync(groupId, senderId, seq);
 
         if (groupId == _activeConvId) {
             var senderName = senderContact.DisplayName;
@@ -788,15 +843,6 @@ public partial class MainWindow : Window {
         return true;
     }
 
-    static string NormalizeServerUrl(string? serverUrl) {
-        var trimmed = serverUrl?.Trim() ?? "";
-        return string.IsNullOrEmpty(trimmed) ? AppBranding.DefaultRelayUrl : trimmed.TrimEnd('/');
-    }
-
-    static bool IsValidServerUrl(string serverUrl) =>
-        Uri.TryCreate(serverUrl, UriKind.Absolute, out var uri) &&
-        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
-
     static string BuildGroupInviteContent(GroupInfo group) =>
         GroupInvitePrefix + JsonSerializer.Serialize(new GroupInvitePayload(
             group.GroupId,
@@ -914,6 +960,7 @@ public partial class MainWindow : Window {
         AddGroupForm.Visibility = Visibility.Collapsed;
         TabAddDm.BorderBrush = (Brush)FindResource("Green");
         TabAddGroup.BorderBrush = (Brush)FindResource("Border");
+        AddStatus.Visibility = Visibility.Collapsed;
     }
 
     void ShowAddGroupTab() {
@@ -921,6 +968,7 @@ public partial class MainWindow : Window {
         AddGroupForm.Visibility = Visibility.Visible;
         TabAddGroup.BorderBrush = (Brush)FindResource("Green");
         TabAddDm.BorderBrush = (Brush)FindResource("Border");
+        AddStatus.Visibility = Visibility.Collapsed;
     }
 
     void BtnCloseOverlay_Click(object s, RoutedEventArgs e) =>

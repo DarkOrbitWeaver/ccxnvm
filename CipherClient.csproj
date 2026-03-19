@@ -13,6 +13,12 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="server\**\*.cs" />
+    <Compile Remove="tests\**\*.cs" />
+    <Compile Remove="tools\**\*.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(WindowIcon)' != '' and Exists('$(WindowIcon)')">
+    <None Remove="$(WindowIcon)" />
+    <Resource Include="$(WindowIcon)" />
   </ItemGroup>
   <ItemGroup>
     <!-- Real-time messaging -->
@@ -25,3 +31,4 @@
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
   </ItemGroup>
 </Project>
+
