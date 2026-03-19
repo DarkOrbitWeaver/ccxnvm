@@ -3,7 +3,6 @@ services:
     name: cipher-relay
     runtime: docker
     plan: free
-    rootDir: server
     dockerfilePath: server/Dockerfile
     dockerContext: .
     healthCheckPath: /health
