@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: cipher-relay
+    runtime: dotnet
+    plan: free
+    rootDir: server
+    buildCommand: dotnet publish CipherServer.csproj -c Release -o out
+    startCommand: dotnet out/CipherServer.dll
+    healthCheckPath: /health
