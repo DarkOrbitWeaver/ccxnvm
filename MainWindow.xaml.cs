@@ -118,7 +118,6 @@ public class MessageViewModel : INotifyPropertyChanged {
 record GroupInvitePayload(string GroupId, string Name, string GroupKey, List<string> MemberIds);
 
 public partial class MainWindow : Window {
-    const string DefaultRelayUrl = "https://cipher-relay.onrender.com";
     const string GroupInvitePrefix = "[cipher-group-invite]";
 
     // ── State ─────────────────────────────────────────────────────────────
@@ -147,11 +146,13 @@ public partial class MainWindow : Window {
 
     // Reconnect outbox flush timer
     DispatcherTimer? _outboxTimer;
+    bool _networkEventsWired;
 
     // ── Init ──────────────────────────────────────────────────────────────
 
     public MainWindow() {
         InitializeComponent();
+        ApplyBranding();
         MessageList.ItemsSource = _messages;
         ConvList.ItemsSource = _convs;
 
@@ -169,6 +170,13 @@ public partial class MainWindow : Window {
 
         // Try auto-login if session saved
         Loaded += async (_, _) => await TryAutoLoginAsync();
+    }
+
+    void ApplyBranding() {
+        Title = AppBranding.WindowTitle;
+        if (AuthBrandTitle != null) AuthBrandTitle.Text = AppBranding.WindowTitle;
+        if (HeaderBrandText != null) HeaderBrandText.Text = AppBranding.WindowTitle;
+        if (VaultStorageHintText != null) VaultStorageHintText.Text = AppBranding.VaultStorageHint;
     }
 
     // ── Auto-login ────────────────────────────────────────────────────────
@@ -219,7 +227,7 @@ public partial class MainWindow : Window {
         TabLogin.BorderBrush = (Brush)FindResource("Green");
         TabRegister.BorderBrush = (Brush)FindResource("Border");
         if (string.IsNullOrEmpty(LoginServerUrl.Text))
-            LoginServerUrl.Text = DefaultRelayUrl;
+            LoginServerUrl.Text = AppBranding.DefaultRelayUrl;
     }
 
     void ShowRegisterTab() {
@@ -228,7 +236,7 @@ public partial class MainWindow : Window {
         TabRegister.BorderBrush = (Brush)FindResource("Green");
         TabLogin.BorderBrush = (Brush)FindResource("Border");
         if (string.IsNullOrEmpty(RegServerUrl.Text))
-            RegServerUrl.Text = DefaultRelayUrl;
+            RegServerUrl.Text = AppBranding.DefaultRelayUrl;
     }
 
     void LoginPass_KeyDown(object s, KeyEventArgs e) {
@@ -376,6 +384,9 @@ public partial class MainWindow : Window {
     // ── Network event wiring ─────────────────────────────────────────────
 
     void WireNetworkEvents() {
+        if (_networkEventsWired) return;
+        _networkEventsWired = true;
+
         _net.OnConnected += () => Dispatcher.InvokeAsync(() => {
             ConnDot.Text = "●";
             ConnDot.Foreground = (Brush)FindResource("Green");
@@ -404,20 +415,23 @@ public partial class MainWindow : Window {
             }
         });
 
-        _net.OnMessage += async (senderId, payload, sig, seq, ts) => {
-            await Dispatcher.InvokeAsync(async () =>
-                await HandleIncomingDmAsync(senderId, payload, sig, seq, ts));
-        };
+        _net.OnMessage += (senderId, payload, sig, seq, ts) =>
+            RunUiTask(() => HandleIncomingDmAsync(senderId, payload, sig, seq, ts));
 
-        _net.OnGroupMessage += async (groupId, senderId, payload, sig, seq, ts) => {
-            await Dispatcher.InvokeAsync(async () =>
-                await HandleIncomingGroupAsync(groupId, senderId, payload, sig, seq, ts));
-        };
+        _net.OnGroupMessage += (groupId, senderId, payload, sig, seq, ts) =>
+            RunUiTask(() => HandleIncomingGroupAsync(groupId, senderId, payload, sig, seq, ts));
 
         _net.OnError += msg => Dispatcher.InvokeAsync(() => {
             // Non-fatal: show in status area
             SidebarStatus.Text = $"! {msg}";
         });
+    }
+
+    void RunUiTask(Func<Task> work) {
+        _ = Dispatcher.InvokeAsync(work).Task.Unwrap().ContinueWith(t => {
+            var message = t.Exception?.GetBaseException().Message ?? "unexpected UI task error";
+            Dispatcher.Invoke(() => SidebarStatus.Text = $"! {message}");
+        }, TaskContinuationOptions.OnlyOnFaulted);
     }
 
     // ── Incoming message handlers ─────────────────────────────────────────
@@ -776,7 +790,7 @@ public partial class MainWindow : Window {
 
     static string NormalizeServerUrl(string? serverUrl) {
         var trimmed = serverUrl?.Trim() ?? "";
-        return string.IsNullOrEmpty(trimmed) ? DefaultRelayUrl : trimmed.TrimEnd('/');
+        return string.IsNullOrEmpty(trimmed) ? AppBranding.DefaultRelayUrl : trimmed.TrimEnd('/');
     }
 
     static bool IsValidServerUrl(string serverUrl) =>

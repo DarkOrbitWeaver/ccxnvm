@@ -28,7 +28,7 @@ public class LocalUser {
     public byte[] SignPubKey { get; set; } = [];
     public byte[] DhPrivKey { get; set; } = [];
     public byte[] DhPubKey { get; set; } = [];
-    public string ServerUrl { get; set; } = "https://cipher-relay.onrender.com";
+    public string ServerUrl { get; set; } = AppBranding.DefaultRelayUrl;
     public long CreatedAt { get; set; }
 }
 
@@ -330,11 +330,11 @@ public class Vault : IDisposable {
 
     public static string DefaultVaultPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "Cipher", "vault.db");
+            AppBranding.AppDataFolder, "vault.db");
 
     public static string SaltPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "Cipher", "vault.salt");
+            AppBranding.AppDataFolder, "vault.salt");
 
     public bool IsOpen { get; private set; }
 
@@ -755,7 +755,7 @@ public record OutboxItem(
 public static class Session {
     static string SessionFile =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "Cipher", "session.bin");
+            AppBranding.AppDataFolder, "session.bin");
 
     /// <summary>
     /// Save vault key protected by DPAPI (current Windows user only).

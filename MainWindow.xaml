@@ -28,8 +28,9 @@
         <Grid x:Name="AuthPanel" Background="#0C0C0C" Panel.ZIndex="10">
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="400">
                 <!-- ASCII logo -->
-                <TextBlock FontFamily="Consolas" FontSize="11" Foreground="#00FF41"
-                           HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,24">
+                <TextBlock x:Name="LegacyLogo" FontFamily="Consolas" FontSize="11" Foreground="#00FF41"
+                           HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,24"
+                           Visibility="Collapsed">
 <![CDATA[  ██████╗██╗██████╗ ██╗  ██╗███████╗██████╗
  ██╔════╝██║██╔══██╗██║  ██║██╔════╝██╔══██╗
  ██║     ██║██████╔╝███████║█████╗  ██████╔╝
@@ -37,6 +38,10 @@
  ╚██████╗██║██║     ██║  ██║███████╗██║  ██║
   ╚═════╝╚═╝╚═╝     ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝]]>
                 </TextBlock>
+
+                <TextBlock x:Name="AuthBrandTitle" FontSize="28" FontWeight="Bold"
+                           Foreground="#00FF41" HorizontalAlignment="Center"
+                           Margin="0,0,0,10" Text="CIPHER"/>
 
                 <TextBlock FontSize="10" Foreground="#444444" HorizontalAlignment="Center"
                            Margin="0,0,0,32">zero-trust · end-to-end encrypted · no metadata</TextBlock>
@@ -112,7 +117,7 @@
                             x:Name="BtnRegister"/>
                 </StackPanel>
 
-                <TextBlock FontSize="9" Foreground="#333333" HorizontalAlignment="Center"
+                <TextBlock x:Name="VaultStorageHintText" FontSize="9" Foreground="#333333" HorizontalAlignment="Center"
                            Margin="0,20,0,0">
                     vault stored in %APPDATA%\Cipher — no cloud, no servers, just you
                 </TextBlock>
@@ -143,7 +148,7 @@
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock x:Name="ConnDot" Text="●" FontSize="10"
                                    Foreground="#FF3333" Margin="0,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="CIPHER" FontSize="12" FontWeight="Bold"
+                        <TextBlock x:Name="HeaderBrandText" Text="CIPHER" FontSize="12" FontWeight="Bold"
                                    Foreground="#00FF41" VerticalAlignment="Center"/>
                     </StackPanel>
 

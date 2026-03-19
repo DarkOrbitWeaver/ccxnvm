@@ -1,12 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="Branding.props" Condition="Exists('Branding.props')" />
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <ApplicationIcon Condition="Exists('cipher.ico')">cipher.ico</ApplicationIcon>
-    <!-- Self-contained so friend needs ZERO installs -->
+    <ApplicationIcon Condition="'$(BrandingIcon)' != '' and Exists('$(BrandingIcon)')">$(BrandingIcon)</ApplicationIcon>
+    <!-- Development builds stay framework-dependent; friend exports use publish-friend.ps1 -->
     <SelfContained>false</SelfContained>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>

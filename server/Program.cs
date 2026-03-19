@@ -22,6 +22,7 @@ var app = builder.Build();
 
 app.UseCors();
 app.MapGet("/", () => "CIPHER RELAY ONLINE");
+app.MapMethods("/", ["HEAD"], () => Results.Ok());
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapHub<CipherHub>("/hub");
 app.Run();
@@ -31,7 +32,8 @@ static class RelayState {
     public static readonly ConcurrentDictionary<string, string> ConnUsers = new();
     public static readonly ConcurrentDictionary<string, KeyBundle> Keys = new();
     public static readonly ConcurrentDictionary<string, ConcurrentQueue<OfflineMsg>> Offline = new();
-    public static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, long>> SeqTracker = new();
+    public static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, long>> DirectSeqTracker = new();
+    public static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, long>> GroupSeqTracker = new();
 }
 
 enum OfflineMessageKind {
@@ -87,11 +89,13 @@ public class CipherHub : Hub {
     public async Task Send(string recipientId, string payload, string sig, long seqNum) {
         var senderId = GetCallerId();
         if (senderId == null) throw new HubException("NOT_REGISTERED");
+        if (!IsValidMessageEnvelope(recipientId, payload, sig))
+            throw new HubException("INVALID_PAYLOAD");
 
         if (!VerifyMessage(senderId, payload, sig, seqNum))
             throw new HubException("INVALID_SIGNATURE");
 
-        var senderSeqs = RelayState.SeqTracker.GetOrAdd(recipientId, _ => new());
+        var senderSeqs = RelayState.DirectSeqTracker.GetOrAdd(recipientId, _ => new());
         if (senderSeqs.TryGetValue(senderId, out var lastSeq) && seqNum <= lastSeq)
             throw new HubException("REPLAY_REJECTED");
         senderSeqs[senderId] = seqNum;
@@ -110,8 +114,15 @@ public class CipherHub : Hub {
     public async Task SendGroup(string groupId, List<string> recipientIds, string payload, string sig, long seqNum) {
         var senderId = GetCallerId();
         if (senderId == null) throw new HubException("NOT_REGISTERED");
+        if (!IsValidGroupRequest(groupId, recipientIds, payload, sig))
+            throw new HubException("INVALID_PAYLOAD");
         if (!VerifyMessage(senderId, payload, sig, seqNum)) throw new HubException("INVALID_SIGNATURE");
         if (recipientIds.Count > 100) throw new HubException("TOO_MANY_RECIPIENTS");
+
+        var senderSeqs = RelayState.GroupSeqTracker.GetOrAdd(groupId, _ => new());
+        if (senderSeqs.TryGetValue(senderId, out var lastSeq) && seqNum <= lastSeq)
+            throw new HubException("REPLAY_REJECTED");
+        senderSeqs[senderId] = seqNum;
 
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -169,6 +180,39 @@ public class CipherHub : Hub {
         } catch {
             return false;
         }
+    }
+
+    static bool IsValidMessageEnvelope(string targetId, string payload, string sig) {
+        if (!IsValidToken(targetId, 8, 128)) return false;
+        if (string.IsNullOrWhiteSpace(payload) || payload.Length > 48_000) return false;
+
+        try {
+            var sigBytes = Convert.FromBase64String(sig);
+            return sigBytes.Length is >= 48 and <= 512;
+        } catch {
+            return false;
+        }
+    }
+
+    static bool IsValidGroupRequest(string groupId, List<string> recipientIds, string payload, string sig) {
+        if (!IsValidToken(groupId, 8, 128)) return false;
+        if (recipientIds.Count == 0 || recipientIds.Count > 100) return false;
+        if (recipientIds.Any(id => !IsValidToken(id, 8, 128))) return false;
+        return IsValidMessageEnvelope(recipientIds[0], payload, sig);
+    }
+
+    static bool IsValidToken(string value, int minLength, int maxLength) {
+        if (string.IsNullOrWhiteSpace(value) || value.Length < minLength || value.Length > maxLength) {
+            return false;
+        }
+
+        foreach (var ch in value) {
+            if (!char.IsLetterOrDigit(ch) && ch is not '-' and not '_' and not ':') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     string? GetCallerId() {
