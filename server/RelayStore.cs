@@ -76,6 +76,7 @@ public interface IRelayStore {
     Task<bool> AllowRequestAsync(string bucket, int limit, TimeSpan window, long nowMs, CancellationToken cancellationToken = default);
     Task UpsertKeyBundleAsync(KeyBundle bundle, CancellationToken cancellationToken = default);
     Task<KeyBundle?> GetKeyBundleAsync(string userId, CancellationToken cancellationToken = default);
+    Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default);
     Task<bool> TryStoreDirectAsync(string recipientId, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
     Task<bool> TryStoreGroupAsync(string groupId, IReadOnlyList<string> recipientIds, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<PendingRelayMessage>> GetPendingMessagesAsync(string recipientId, int limit, long nowMs, CancellationToken cancellationToken = default);
@@ -106,6 +107,7 @@ abstract class RelayStoreBase : IRelayStore {
     public abstract Task<bool> AllowRequestAsync(string bucket, int limit, TimeSpan window, long nowMs, CancellationToken cancellationToken = default);
     public abstract Task UpsertKeyBundleAsync(KeyBundle bundle, CancellationToken cancellationToken = default);
     public abstract Task<KeyBundle?> GetKeyBundleAsync(string userId, CancellationToken cancellationToken = default);
+    public abstract Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default);
     public abstract Task<bool> TryStoreDirectAsync(string recipientId, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
     public abstract Task<bool> TryStoreGroupAsync(string groupId, IReadOnlyList<string> recipientIds, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
     public abstract Task<IReadOnlyList<PendingRelayMessage>> GetPendingMessagesAsync(string recipientId, int limit, long nowMs, CancellationToken cancellationToken = default);
@@ -117,7 +119,8 @@ abstract class RelayStoreBase : IRelayStore {
             user_id TEXT PRIMARY KEY,
             sign_pub_key TEXT NOT NULL,
             dh_pub_key TEXT NOT NULL,
-            registered_at INTEGER NOT NULL
+            registered_at INTEGER NOT NULL,
+            display_name TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS direct_seq_state (
@@ -217,6 +220,7 @@ sealed class SqliteRelayStore : RelayStoreBase {
         await using var command = connection.CreateCommand();
         command.CommandText = SchemaSql;
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await EnsureDisplayNameColumnAsync(connection, cancellationToken);
         Logger.LogInformation("Relay store ready with local SQLite at {Path}", Options.SqlitePath);
     }
 
@@ -260,18 +264,23 @@ sealed class SqliteRelayStore : RelayStoreBase {
         await connection.OpenAsync(cancellationToken);
         await ExecuteNonQueryAsync(connection,
             """
-            INSERT INTO key_bundles(user_id, sign_pub_key, dh_pub_key, registered_at)
-            VALUES (@user_id, @sign_pub_key, @dh_pub_key, @registered_at)
+            INSERT INTO key_bundles(user_id, sign_pub_key, dh_pub_key, registered_at, display_name)
+            VALUES (@user_id, @sign_pub_key, @dh_pub_key, @registered_at, @display_name)
             ON CONFLICT(user_id) DO UPDATE SET
                 sign_pub_key = excluded.sign_pub_key,
                 dh_pub_key = excluded.dh_pub_key,
-                registered_at = excluded.registered_at
+                registered_at = excluded.registered_at,
+                display_name = CASE
+                    WHEN length(excluded.display_name) > 0 THEN excluded.display_name
+                    ELSE key_bundles.display_name
+                END
             """,
             [
                 SqlArg.Text("user_id", bundle.UserId),
                 SqlArg.Text("sign_pub_key", bundle.SignPubKey),
                 SqlArg.Text("dh_pub_key", bundle.DhPubKey),
-                SqlArg.Integer("registered_at", bundle.RegisteredAt)
+                SqlArg.Integer("registered_at", bundle.RegisteredAt),
+                SqlArg.Text("display_name", bundle.DisplayName)
             ],
             cancellationToken);
     }
@@ -281,7 +290,7 @@ sealed class SqliteRelayStore : RelayStoreBase {
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT user_id, sign_pub_key, dh_pub_key, registered_at
+            SELECT user_id, sign_pub_key, dh_pub_key, registered_at, display_name
             FROM key_bundles
             WHERE user_id = @user_id
             LIMIT 1
@@ -296,7 +305,34 @@ sealed class SqliteRelayStore : RelayStoreBase {
             reader.GetString(0),
             reader.GetString(1),
             reader.GetString(2),
-            reader.GetInt64(3));
+            reader.GetInt64(3),
+            reader.GetString(4));
+    }
+
+    public override async Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default) {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await ExecuteNonQueryAsync(connection,
+            """
+            UPDATE key_bundles
+            SET display_name = @display_name
+            WHERE user_id = @user_id
+            """,
+            [
+                SqlArg.Text("user_id", userId),
+                SqlArg.Text("display_name", displayName)
+            ],
+            cancellationToken);
+    }
+
+    static async Task EnsureDisplayNameColumnAsync(SqliteConnection connection, CancellationToken cancellationToken) {
+        try {
+            await ExecuteNonQueryAsync(connection,
+                "ALTER TABLE key_bundles ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+                [],
+                cancellationToken);
+        } catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) {
+        }
     }
 
     public override async Task<bool> TryStoreDirectAsync(string recipientId, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default) {
@@ -532,6 +568,7 @@ sealed class TursoRelayStore : RelayStoreBase {
 
     public override async Task InitializeAsync(CancellationToken cancellationToken = default) {
         await ExecuteSequenceAsync(SchemaSql, cancellationToken);
+        await EnsureDisplayNameColumnAsync(cancellationToken);
         Logger.LogInformation("Relay store ready with Turso at {Url}", Options.TursoUrl);
     }
 
@@ -563,25 +600,30 @@ sealed class TursoRelayStore : RelayStoreBase {
     public override Task UpsertKeyBundleAsync(KeyBundle bundle, CancellationToken cancellationToken = default) =>
         ExecuteNonQueryAsync(
             """
-            INSERT INTO key_bundles(user_id, sign_pub_key, dh_pub_key, registered_at)
-            VALUES (@user_id, @sign_pub_key, @dh_pub_key, @registered_at)
+            INSERT INTO key_bundles(user_id, sign_pub_key, dh_pub_key, registered_at, display_name)
+            VALUES (@user_id, @sign_pub_key, @dh_pub_key, @registered_at, @display_name)
             ON CONFLICT(user_id) DO UPDATE SET
                 sign_pub_key = excluded.sign_pub_key,
                 dh_pub_key = excluded.dh_pub_key,
-                registered_at = excluded.registered_at
+                registered_at = excluded.registered_at,
+                display_name = CASE
+                    WHEN length(excluded.display_name) > 0 THEN excluded.display_name
+                    ELSE key_bundles.display_name
+                END
             """,
             [
                 SqlArg.Text("user_id", bundle.UserId),
                 SqlArg.Text("sign_pub_key", bundle.SignPubKey),
                 SqlArg.Text("dh_pub_key", bundle.DhPubKey),
-                SqlArg.Integer("registered_at", bundle.RegisteredAt)
+                SqlArg.Integer("registered_at", bundle.RegisteredAt),
+                SqlArg.Text("display_name", bundle.DisplayName)
             ],
             cancellationToken);
 
     public override async Task<KeyBundle?> GetKeyBundleAsync(string userId, CancellationToken cancellationToken = default) {
         var rows = await QueryRowsAsync(
             """
-            SELECT user_id, sign_pub_key, dh_pub_key, registered_at
+            SELECT user_id, sign_pub_key, dh_pub_key, registered_at, display_name
             FROM key_bundles
             WHERE user_id = @user_id
             LIMIT 1
@@ -594,7 +636,32 @@ sealed class TursoRelayStore : RelayStoreBase {
             AsString(row[0])!,
             AsString(row[1])!,
             AsString(row[2])!,
-            AsLong(row[3]));
+            AsLong(row[3]),
+            AsString(row[4]) ?? "");
+    }
+
+    public override Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default) =>
+        ExecuteNonQueryAsync(
+            """
+            UPDATE key_bundles
+            SET display_name = @display_name
+            WHERE user_id = @user_id
+            """,
+            [
+                SqlArg.Text("user_id", userId),
+                SqlArg.Text("display_name", displayName)
+            ],
+            cancellationToken);
+
+    async Task EnsureDisplayNameColumnAsync(CancellationToken cancellationToken) {
+        try {
+            await ExecuteNonQueryAsync(
+                "ALTER TABLE key_bundles ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+                [],
+                cancellationToken);
+        } catch (InvalidOperationException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase) ||
+                                                     ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase)) {
+        }
     }
 
     public override async Task<bool> TryStoreDirectAsync(string recipientId, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default) {

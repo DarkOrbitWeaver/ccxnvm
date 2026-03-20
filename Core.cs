@@ -44,6 +44,7 @@ public class Contact {
     public long KeyChangedAt { get; set; }
     public bool IsOnline { get; set; }
     public long AddedAt { get; set; }
+    public long LastSeen { get; set; }
     public string? ConversationId { get; set; }
     public bool HasPendingKeyChange => PendingSignPubKey.Length > 0 && PendingDhPubKey.Length > 0;
 }
@@ -284,6 +285,14 @@ public static class Crypto {
         return Encoding.UTF8.GetString(plaintext);
     }
 
+    static bool HasRequiredWireFields(WireMessage? wire, string expectedType) =>
+        wire != null &&
+        !string.IsNullOrWhiteSpace(wire.Id) &&
+        !string.IsNullOrWhiteSpace(wire.Ciphertext) &&
+        !string.IsNullOrWhiteSpace(wire.Nonce) &&
+        !string.IsNullOrWhiteSpace(wire.Tag) &&
+        string.Equals(wire.Type, expectedType, StringComparison.Ordinal);
+
     // ── Message serialization ──────────────────────────────────────────────
 
     /// <summary>Encrypt a message for a DM conversation. Returns wire payload JSON.</summary>
@@ -305,21 +314,22 @@ public static class Crypto {
     public static Message? DecryptDm(byte[] conversationKey, string senderId, string payload, bool isMine = false) {
         try {
             var wire = JsonSerializer.Deserialize<WireMessage>(payload, JsonOpts);
-            if (wire == null) return null;
-            var msgKey = DeriveMessageKey(conversationKey, wire.SeqNum);
+            if (!HasRequiredWireFields(wire, "dm")) return null;
+            var frame = wire!;
+            var msgKey = DeriveMessageKey(conversationKey, frame.SeqNum);
             var plain = Decrypt(msgKey,
-                Convert.FromBase64String(wire.Ciphertext),
-                Convert.FromBase64String(wire.Nonce),
-                Convert.FromBase64String(wire.Tag));
+                Convert.FromBase64String(frame.Ciphertext),
+                Convert.FromBase64String(frame.Nonce),
+                Convert.FromBase64String(frame.Tag));
             if (plain == null) return null;
             var content = UnpackMessagePlaintext(plain);
             if (content == null) return null;
             return new Message {
-                Id = wire.Id,
+                Id = frame.Id,
                 SenderId = senderId,
                 Content = content,
-                Timestamp = wire.Timestamp,
-                SeqNum = wire.SeqNum,
+                Timestamp = frame.Timestamp,
+                SeqNum = frame.SeqNum,
                 Status = MessageStatus.Delivered,
                 IsMine = isMine
             };
@@ -340,22 +350,23 @@ public static class Crypto {
     public static Message? DecryptGroup(byte[] groupKey, string groupId, string senderId, string payload, bool isMine = false) {
         try {
             var wire = JsonSerializer.Deserialize<WireMessage>(payload, JsonOpts);
-            if (wire == null) return null;
-            var msgKey = DeriveMessageKey(groupKey, wire.SeqNum);
+            if (!HasRequiredWireFields(wire, "grp")) return null;
+            var frame = wire!;
+            var msgKey = DeriveMessageKey(groupKey, frame.SeqNum);
             var plain = Decrypt(msgKey,
-                Convert.FromBase64String(wire.Ciphertext),
-                Convert.FromBase64String(wire.Nonce),
-                Convert.FromBase64String(wire.Tag));
+                Convert.FromBase64String(frame.Ciphertext),
+                Convert.FromBase64String(frame.Nonce),
+                Convert.FromBase64String(frame.Tag));
             if (plain == null) return null;
             var content = UnpackMessagePlaintext(plain);
             if (content == null) return null;
             return new Message {
-                Id = wire.Id,
+                Id = frame.Id,
                 ConversationId = groupId,
                 SenderId = senderId,
                 Content = content,
-                Timestamp = wire.Timestamp,
-                SeqNum = wire.SeqNum,
+                Timestamp = frame.Timestamp,
+                SeqNum = frame.SeqNum,
                 Status = MessageStatus.Delivered,
                 IsMine = isMine,
                 ConvType = ConversationType.Group
@@ -437,14 +448,20 @@ public partial class Vault : IDisposable {
                 dh_pub TEXT NOT NULL,
                 conversation_id TEXT NOT NULL,
                 added_at INTEGER NOT NULL,
-                last_seen INTEGER DEFAULT 0
+                last_seen INTEGER DEFAULT 0,
+                is_verified INTEGER NOT NULL DEFAULT 0,
+                pending_sign_pub TEXT,
+                pending_dh_pub TEXT,
+                key_changed_at INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 group_id TEXT PRIMARY KEY,
                 name_enc BLOB NOT NULL,
-                member_ids TEXT NOT NULL,
+                member_ids TEXT NOT NULL DEFAULT '',
+                member_ids_enc BLOB,
                 group_key_enc BLOB NOT NULL,
                 owner_id TEXT NOT NULL DEFAULT '',
+                owner_id_enc BLOB,
                 created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS messages (
@@ -475,6 +492,12 @@ public partial class Vault : IDisposable {
                 last_seq INTEGER NOT NULL DEFAULT 0,
                 secret_enc BLOB
             );
+            CREATE TABLE IF NOT EXISTS incoming_seq_state (
+                conversation_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                last_seq INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (conversation_id, sender_id)
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -493,11 +516,6 @@ public partial class Vault : IDisposable {
             );
         ");
 
-        TryExec("ALTER TABLE contacts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0");
-        TryExec("ALTER TABLE contacts ADD COLUMN pending_sign_pub TEXT");
-        TryExec("ALTER TABLE contacts ADD COLUMN pending_dh_pub TEXT");
-        TryExec("ALTER TABLE contacts ADD COLUMN key_changed_at INTEGER NOT NULL DEFAULT 0");
-        TryExec("ALTER TABLE groups ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''");
     }
 
     // ── Identity ───────────────────────────────────────────────────────────
@@ -571,7 +589,7 @@ public partial class Vault : IDisposable {
                 ("dp", Convert.ToBase64String(c.DhPubKey)),
                 ("conv", c.ConversationId ?? ""),
                 ("ts", c.AddedAt),
-                ("ls", (object?)null ?? DBNull.Value),
+                ("ls", c.LastSeen),
                 ("verified", c.IsVerified ? 1 : 0),
                 ("psp", c.PendingSignPubKey.Length > 0 ? Convert.ToBase64String(c.PendingSignPubKey) : DBNull.Value),
                 ("pdp", c.PendingDhPubKey.Length > 0 ? Convert.ToBase64String(c.PendingDhPubKey) : DBNull.Value),
@@ -597,7 +615,8 @@ public partial class Vault : IDisposable {
                     IsVerified = TryGetInt32(r, "is_verified") == 1,
                     KeyChangedAt = TryGetInt64(r, "key_changed_at"),
                     ConversationId = r.GetString(r.GetOrdinal("conversation_id")),
-                    AddedAt = r.GetInt64(r.GetOrdinal("added_at"))
+                    AddedAt = r.GetInt64(r.GetOrdinal("added_at")),
+                    LastSeen = TryGetInt64(r, "last_seen")
                 });
             }
             return list;
@@ -612,15 +631,18 @@ public partial class Vault : IDisposable {
 
     public void SaveGroup(GroupInfo g) {
         lock (_gate) {
+            var memberIds = string.Join(",", g.MemberIds);
             ExecParam(@"
                 INSERT OR REPLACE INTO groups
-                (group_id, name_enc, member_ids, group_key_enc, owner_id, created_at)
-                VALUES (@id, @name, @members, @key, @owner, @ts)",
+                (group_id, name_enc, member_ids, member_ids_enc, group_key_enc, owner_id, owner_id_enc, created_at)
+                VALUES (@id, @name, @members, @membersEnc, @key, @owner, @ownerEnc, @ts)",
                 ("id", g.GroupId),
                 ("name", Crypto.EncryptStr(_key, g.Name)),
-                ("members", string.Join(",", g.MemberIds)),
+                ("members", ""),
+                ("membersEnc", Crypto.EncryptStr(_key, memberIds)),
                 ("key", Crypto.EncryptField(_key, g.GroupKey)),
-                ("owner", g.OwnerId),
+                ("owner", ""),
+                ("ownerEnc", string.IsNullOrWhiteSpace(g.OwnerId) ? DBNull.Value : Crypto.EncryptStr(_key, g.OwnerId)),
                 ("ts", g.CreatedAt));
         }
     }
@@ -632,16 +654,21 @@ public partial class Vault : IDisposable {
             cmd.CommandText = "SELECT * FROM groups";
             using var r = cmd.ExecuteReader();
             while (r.Read()) {
+                var groupId = r.GetString(r.GetOrdinal("group_id"));
                 var keyEnc = (byte[])r["group_key_enc"];
                 var groupKey = Crypto.DecryptField(_key, keyEnc);
-                if (groupKey == null) continue;
+                if (groupKey == null) {
+                    AppLog.Warn("vault", $"skipping group with unreadable key: {AppTelemetry.MaskUserId(groupId)}");
+                    continue;
+                }
+                var memberIds = ReadEncryptedOrLegacyCsv(r, "member_ids_enc", "member_ids", $"group:{AppTelemetry.MaskUserId(groupId)}");
+                var ownerId = ReadEncryptedOrLegacyString(r, "owner_id_enc", "owner_id", $"group:{AppTelemetry.MaskUserId(groupId)}");
                 list.Add(new GroupInfo {
-                    GroupId = r.GetString(r.GetOrdinal("group_id")),
+                    GroupId = groupId,
                     Name = Crypto.DecryptStr(_key, (byte[])r["name_enc"]) ?? "???",
-                    MemberIds = r.GetString(r.GetOrdinal("member_ids"))
-                                 .Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(),
+                    MemberIds = memberIds.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(),
                     GroupKey = groupKey,
-                    OwnerId = TryGetString(r, "owner_id"),
+                    OwnerId = ownerId,
                     CreatedAt = r.GetInt64(r.GetOrdinal("created_at"))
                 });
             }
@@ -695,7 +722,7 @@ public partial class Vault : IDisposable {
             cmd.CommandText = @"
                 SELECT * FROM messages
                 WHERE conversation_id=@conv
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, seq_num DESC, id DESC
                 LIMIT @limit OFFSET @offset";
             cmd.Parameters.AddWithValue("conv", conversationId);
             cmd.Parameters.AddWithValue("limit", limit);
@@ -870,6 +897,38 @@ public partial class Vault : IDisposable {
         return (seq, secret);
     }
 
+    public Dictionary<string, long> LoadIncomingSeqState(string convId) {
+        lock (_gate) {
+            var result = new Dictionary<string, long>(StringComparer.Ordinal);
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = """
+                SELECT sender_id, last_seq
+                FROM incoming_seq_state
+                WHERE conversation_id=@id
+                """;
+            cmd.Parameters.AddWithValue("@id", convId);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) {
+                result[reader.GetString(0)] = reader.GetInt64(1);
+            }
+            return result;
+        }
+    }
+
+    public void SaveIncomingSeqState(string convId, string senderId, long lastSeq) =>
+        ExecParam("""
+            INSERT INTO incoming_seq_state(conversation_id, sender_id, last_seq)
+            VALUES (@conv, @sender, @seq)
+            ON CONFLICT(conversation_id, sender_id) DO UPDATE SET
+                last_seq = CASE
+                    WHEN excluded.last_seq > incoming_seq_state.last_seq THEN excluded.last_seq
+                    ELSE incoming_seq_state.last_seq
+                END
+            """,
+            ("conv", convId),
+            ("sender", senderId),
+            ("seq", lastSeq));
+
     public long NextSeqNum(string convId) {
         lock (_gate) {
             using var tx = _db!.BeginTransaction(deferred: false);
@@ -923,7 +982,7 @@ public partial class Vault : IDisposable {
         lock (_gate) {
             var list = new List<OutboxItem>();
             using var cmd = _db!.CreateCommand();
-            cmd.CommandText = "SELECT * FROM outbox ORDER BY created_at LIMIT 100";
+            cmd.CommandText = "SELECT * FROM outbox WHERE attempts < 100 ORDER BY created_at LIMIT 100";
             using var r = cmd.ExecuteReader();
             while (r.Read()) {
                 var id = r.GetString(r.GetOrdinal("id"));
@@ -1101,6 +1160,28 @@ public partial class Vault : IDisposable {
         }
     }
 
+    string ReadEncryptedOrLegacyString(SqliteDataReader reader, string encryptedColumn, string legacyColumn, string? recordId = null) {
+        try {
+            var encOrdinal = reader.GetOrdinal(encryptedColumn);
+            if (!reader.IsDBNull(encOrdinal)) {
+                var decrypted = Crypto.DecryptStr(_key, (byte[])reader[encryptedColumn]);
+                if (decrypted != null) {
+                    return decrypted;
+                }
+
+                AppLog.Warn("vault", $"failed to decrypt {encryptedColumn} for {recordId ?? "record"}");
+            }
+        } catch (IndexOutOfRangeException) {
+        } catch (InvalidCastException ex) {
+            AppLog.Warn("vault", $"invalid storage type for {encryptedColumn} on {recordId ?? "record"}: {ex.Message}");
+        }
+
+        return TryGetString(reader, legacyColumn);
+    }
+
+    string ReadEncryptedOrLegacyCsv(SqliteDataReader reader, string encryptedColumn, string legacyColumn, string? recordId = null) =>
+        ReadEncryptedOrLegacyString(reader, encryptedColumn, legacyColumn, recordId);
+
     public void Dispose() {
         lock (_gate) {
             if (_disposed) return;
@@ -1154,10 +1235,35 @@ public static class Session {
 
     /// <summary>Clear the saved session (called on logout and nuke).</summary>
     public static void Clear() {
-        if (File.Exists(SessionFile)) File.Delete(SessionFile);
+        SecureDelete(SessionFile);
     }
 
     public static bool HasSession() => File.Exists(SessionFile);
+
+    static void SecureDelete(string path) {
+        if (!File.Exists(path)) return;
+
+        try {
+            var length = new FileInfo(path).Length;
+            if (length > 0) {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                var buffer = RandomNumberGenerator.GetBytes((int)Math.Min(length, 1024 * 1024));
+                long written = 0;
+                while (written < length) {
+                    var toWrite = (int)Math.Min(buffer.Length, length - written);
+                    stream.Write(buffer, 0, toWrite);
+                    written += toWrite;
+                }
+                stream.Flush(flushToDisk: true);
+            }
+        } catch {
+        }
+
+        try {
+            File.Delete(path);
+        } catch {
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1165,15 +1271,20 @@ public static class Session {
 // ═══════════════════════════════════════════════════════════════════════════
 public enum RelayConnectionState { Disconnected, Connecting, Reconnecting, Connected }
 
+public readonly record struct PublicDirectoryProfile(byte[] SignPubKey, byte[] DhPubKey, string? DisplayName);
+
 public class NetworkClient : IAsyncDisposable {
     static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(12);
     HubConnection? _hub;
     LocalUser? _user;
     readonly SemaphoreSlim _connectGate = new(1, 1);
+    readonly SemaphoreSlim _registerGate = new(1, 1);
     readonly CancellationTokenSource _lifetimeCts = new();
     Task? _retryLoop;
     Task? _heartbeatLoop;
     int _retryAttempt;
+    int _disconnectSignalSent;
+    string? _lastRegisteredConnectionId;
     bool _disposed;
 
     public bool IsConnected => _hub?.State == HubConnectionState.Connected;
@@ -1202,6 +1313,7 @@ public class NetworkClient : IAsyncDisposable {
             await _hub.DisposeAsync();
             _hub = null;
         }
+        _lastRegisteredConnectionId = null;
 
         _hub = new HubConnectionBuilder()
             .WithUrl(hubUrl)
@@ -1228,14 +1340,14 @@ public class NetworkClient : IAsyncDisposable {
         _hub.Reconnecting += ex => {
             AppLog.Warn("relay", $"signalr reconnecting - {AppTelemetry.DescribeException(ex ?? new Exception("connection lost"))}");
             RaiseState(RelayConnectionState.Reconnecting, "relay connection lost - retrying...");
-            OnDisconnected?.Invoke();
+            NotifyDisconnectedOnce();
             return Task.CompletedTask;
         };
 
         _hub.Reconnected += async connectionId => {
             AppLog.Info("relay", $"signalr reconnected connection_id={connectionId ?? "-"}");
             await RegisterAsync();
-            _retryAttempt = 0;
+            ResetRecoveryState();
             RaiseState(RelayConnectionState.Connected, "relay connected");
             OnConnected?.Invoke();
         };
@@ -1248,7 +1360,7 @@ public class NetworkClient : IAsyncDisposable {
                 AppLog.Warn("relay", "signalr closed without exception");
             }
             RaiseState(RelayConnectionState.Disconnected, "relay offline - retrying in background...");
-            OnDisconnected?.Invoke();
+            NotifyDisconnectedOnce();
             EnsureRetryLoop();
             return Task.CompletedTask;
         };
@@ -1264,16 +1376,45 @@ public class NetworkClient : IAsyncDisposable {
     /// <summary>Re-register keys with server after connect/reconnect.</summary>
     async Task RegisterAsync() {
         if (_hub == null || _user == null) return;
-        var started = AppTelemetry.StartTimer();
-        var dhPubKey = Convert.ToBase64String(_user.DhPubKey);
-        var selfSig = Crypto.SignRegistration(_user.SignPrivKey, _user.UserId, dhPubKey);
-        AppLog.Info("relay", $"register begin user={AppTelemetry.MaskUserId(_user.UserId)}");
-        await _hub.InvokeAsync("Register",
-            _user.UserId,
-            Convert.ToBase64String(_user.SignPubKey),
-            dhPubKey,
-            selfSig);
-        AppLog.Info("relay", $"registered relay identity for {AppTelemetry.MaskUserId(_user.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
+        await _registerGate.WaitAsync(_lifetimeCts.Token);
+        try {
+            if (_hub == null || _user == null || !IsConnected) return;
+
+            var connectionId = _hub.ConnectionId;
+            if (!string.IsNullOrWhiteSpace(connectionId) &&
+                string.Equals(connectionId, _lastRegisteredConnectionId, StringComparison.Ordinal)) {
+                return;
+            }
+
+            var started = AppTelemetry.StartTimer();
+            var dhPubKey = Convert.ToBase64String(_user.DhPubKey);
+            var selfSig = Crypto.SignRegistration(_user.SignPrivKey, _user.UserId, dhPubKey);
+            AppLog.Info("relay", $"register begin user={AppTelemetry.MaskUserId(_user.UserId)}");
+            await _hub.InvokeAsync("Register",
+                _user.UserId,
+                Convert.ToBase64String(_user.SignPubKey),
+                dhPubKey,
+                selfSig);
+            await TryPublishDisplayNameAsync();
+            _lastRegisteredConnectionId = connectionId;
+            AppLog.Info("relay", $"registered relay identity for {AppTelemetry.MaskUserId(_user.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
+        } finally {
+            _registerGate.Release();
+        }
+    }
+
+    async Task TryPublishDisplayNameAsync() {
+        if (_hub == null || _user == null || !IsConnected) return;
+
+        var displayName = NormalizePublicDisplayName(_user.DisplayName);
+        if (displayName == null) return;
+
+        try {
+            await _hub.InvokeAsync("UpdatePublicDisplayName", displayName);
+            AppLog.Info("relay", $"published public display name for {AppTelemetry.MaskUserId(_user.UserId)}");
+        } catch (Exception ex) {
+            AppLog.Warn("relay", $"public display name publish skipped: {ex.Message}");
+        }
     }
 
     /// <summary>Send encrypted message to a single user.</summary>
@@ -1307,8 +1448,8 @@ public class NetworkClient : IAsyncDisposable {
         }
     }
 
-    /// <summary>Fetch a user's public keys from the relay (for new contacts).</summary>
-    public async Task<(byte[] signPub, byte[] dhPub)?> GetUserKeysAsync(string userId) {
+    /// <summary>Fetch a user's public relay profile (keys + public display name).</summary>
+    public async Task<PublicDirectoryProfile?> GetUserProfileAsync(string userId) {
         if (!IsConnected) return null;
         var started = AppTelemetry.StartTimer();
         try {
@@ -1323,11 +1464,17 @@ public class NetworkClient : IAsyncDisposable {
                 return null;
             }
             AppLog.Info("relay", $"key lookup ok for {AppTelemetry.MaskUserId(userId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
-            return keys;
+            return new PublicDirectoryProfile(keys.Value.signPub, keys.Value.dhPub, NormalizePublicDisplayName(result.DisplayName));
         } catch (Exception ex) {
             AppLog.Warn("relay", $"key lookup failed for {AppTelemetry.MaskUserId(userId)}: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>Fetch a user's public keys from the relay (for new contacts).</summary>
+    public async Task<(byte[] signPub, byte[] dhPub)?> GetUserKeysAsync(string userId) {
+        var profile = await GetUserProfileAsync(userId);
+        return profile == null ? null : (profile.Value.SignPubKey, profile.Value.DhPubKey);
     }
 
     public async Task<bool> AckDmAsync(string senderId, long seqNum) {
@@ -1391,7 +1538,7 @@ public class NetworkClient : IAsyncDisposable {
             }
 
             await RegisterAsync();
-            _retryAttempt = 0;
+            ResetRecoveryState();
             RaiseState(RelayConnectionState.Connected, "relay connected");
             AppLog.Info("relay", $"hub start ok mode={(fromRetryLoop ? "retry" : "initial")} in {AppTelemetry.ElapsedMilliseconds(started)}ms state={_hub.State}");
             OnConnected?.Invoke();
@@ -1415,8 +1562,9 @@ public class NetworkClient : IAsyncDisposable {
 
         _retryLoop = Task.Run(async () => {
             while (!_disposed && !_lifetimeCts.IsCancellationRequested && !IsConnected) {
-                var delay = GetRetryDelay(++_retryAttempt);
-                AppLog.Warn("relay", $"retry loop attempt={_retryAttempt} delay={(int)delay.TotalSeconds}s");
+                var attempt = Interlocked.Increment(ref _retryAttempt);
+                var delay = GetRetryDelay(attempt);
+                AppLog.Warn("relay", $"retry loop attempt={attempt} delay={(int)delay.TotalSeconds}s");
                 RaiseState(RelayConnectionState.Reconnecting, $"relay offline - retrying in {(int)delay.TotalSeconds}s...");
                 try {
                     await Task.Delay(delay, _lifetimeCts.Token);
@@ -1442,6 +1590,18 @@ public class NetworkClient : IAsyncDisposable {
         OnStateChanged?.Invoke(state, detail);
     }
 
+    void NotifyDisconnectedOnce() {
+        _lastRegisteredConnectionId = null;
+        if (Interlocked.Exchange(ref _disconnectSignalSent, 1) == 0) {
+            OnDisconnected?.Invoke();
+        }
+    }
+
+    void ResetRecoveryState() {
+        Interlocked.Exchange(ref _retryAttempt, 0);
+        Interlocked.Exchange(ref _disconnectSignalSent, 0);
+    }
+
     async Task RunHeartbeatLoopAsync() {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(12));
         try {
@@ -1450,20 +1610,28 @@ public class NetworkClient : IAsyncDisposable {
 
                 try {
                     var started = AppTelemetry.StartTimer();
-                    var pingTask = _hub.InvokeAsync<long>("Ping", _lifetimeCts.Token);
+                    using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+                    var pingTask = _hub.InvokeAsync<long>("Ping", pingCts.Token);
                     var completed = await Task.WhenAny(
                         pingTask,
                         Task.Delay(TimeSpan.FromSeconds(5), _lifetimeCts.Token));
-                    if (completed != pingTask) {
+                    if (completed != pingTask && !_lifetimeCts.IsCancellationRequested) {
+                        pingCts.Cancel();
+                        try {
+                            await pingTask;
+                        } catch {
+                        }
                         throw new TimeoutException("Relay heartbeat timed out.");
                     }
+                    if (_lifetimeCts.IsCancellationRequested) break;
                     await pingTask;
                     AppLog.Info("relay", $"heartbeat ok in {AppTelemetry.ElapsedMilliseconds(started)}ms");
                 } catch (Exception ex) {
+                    if (_hub.State == HubConnectionState.Reconnecting) continue;
                     if (_hub.State != HubConnectionState.Connected) continue;
                     AppLog.Warn("relay", $"heartbeat failed: {AppTelemetry.DescribeException(ex)}");
                     RaiseState(RelayConnectionState.Reconnecting, "relay unreachable - retrying...");
-                    OnDisconnected?.Invoke();
+                    NotifyDisconnectedOnce();
                     try {
                         await _hub.StopAsync(_lifetimeCts.Token);
                     } catch (Exception stopEx) {
@@ -1488,6 +1656,7 @@ public class NetworkClient : IAsyncDisposable {
         }
         if (_hub != null) await _hub.DisposeAsync();
         _connectGate.Dispose();
+        _registerGate.Dispose();
         _lifetimeCts.Dispose();
     }
 
@@ -1497,6 +1666,12 @@ public class NetworkClient : IAsyncDisposable {
         string signPubKey,
         string dhPubKey) {
         var signPub = Convert.FromBase64String(signPubKey);
+        try {
+            using var ecdsa = ECDsa.Create();
+            ecdsa.ImportSubjectPublicKeyInfo(signPub, out _);
+        } catch {
+            return null;
+        }
         var derivedUserId = Crypto.DeriveUserId(signPub);
         if (!string.Equals(derivedUserId, expectedUserId, StringComparison.Ordinal)) {
             return null;
@@ -1517,10 +1692,16 @@ public class NetworkClient : IAsyncDisposable {
         return (signPub, dhPub);
     }
 
+    static string? NormalizePublicDisplayName(string? displayName) {
+        var trimmed = (displayName ?? "").Trim();
+        return trimmed.Length == 0 ? null : trimmed;
+    }
+
     record KeyBundleDto(
         [property: JsonPropertyName("userId")] string UserId,
         [property: JsonPropertyName("signPubKey")] string SignPubKey,
         [property: JsonPropertyName("dhPubKey")] string DhPubKey,
-        [property: JsonPropertyName("registeredAt")] long RegisteredAt);
+        [property: JsonPropertyName("registeredAt")] long RegisteredAt,
+        [property: JsonPropertyName("displayName")] string? DisplayName = null);
 }
 

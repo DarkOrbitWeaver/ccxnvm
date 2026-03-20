@@ -72,4 +72,26 @@ public class CryptoTests {
         Assert.NotNull(decrypted);
         Assert.Equal(source, decrypted!.Content);
     }
+    [Fact]
+    public void DecryptDmRejectsMalformedOrWrongTypeWireMessages() {
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        Assert.Null(Crypto.DecryptDm(key, "alice", """{"seq":1,"ts":0,"type":"dm"}"""));
+        Assert.Null(Crypto.DecryptDm(key, "alice", """{"id":"x","ct":"AA==","nonce":"AA==","tag":"AA==","seq":1,"ts":0,"type":"grp"}"""));
+    }
+
+    [Fact]
+    public void DecryptGroupRejectsDirectWireMessages() {
+        var key = RandomNumberGenerator.GetBytes(32);
+        var message = new Message {
+            Id = "wire-type",
+            Content = "hello",
+            SeqNum = 5,
+            Timestamp = 10
+        };
+
+        var payload = Crypto.EncryptDm(key, message);
+
+        Assert.Null(Crypto.DecryptGroup(key, "grp-1", "alice", payload));
+    }
 }

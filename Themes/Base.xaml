@@ -287,6 +287,57 @@
         </Setter>
     </Style>
 
+    <Style TargetType="RichTextBox" x:Key="TermRichInput">
+        <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
+        <Setter Property="Foreground" Value="{StaticResource White}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
+        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Padding" Value="12,9" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource DimGreen}" />
+        <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+        <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RichTextBox">
+                    <Border x:Name="focusRing"
+                            Background="#00000000"
+                            BorderBrush="#00000000"
+                            BorderThickness="1"
+                            CornerRadius="11"
+                            SnapsToDevicePixels="True">
+                        <Border x:Name="bd"
+                                Margin="1"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="10"
+                                SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Margin="{TemplateBinding Padding}"
+                                          VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}"
+                                          HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}" />
+                        </Border>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="focusRing" Property="BorderBrush" Value="#3358D7B6" />
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="focusRing" Property="Opacity" Value="0.55" />
+                            <Setter TargetName="bd" Property="Opacity" Value="0.55" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="BaseGlassButton" TargetType="Button">
         <Setter Property="Foreground" Value="{StaticResource White}" />
         <Setter Property="BorderBrush" Value="{StaticResource Border}" />

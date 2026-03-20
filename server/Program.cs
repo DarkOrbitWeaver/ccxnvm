@@ -40,7 +40,7 @@ static class RelayState {
     public static readonly ConcurrentDictionary<string, string> ConnUsers = new();
 }
 
-public record KeyBundle(string UserId, string SignPubKey, string DhPubKey, long RegisteredAt);
+public record KeyBundle(string UserId, string SignPubKey, string DhPubKey, long RegisteredAt, string DisplayName = "");
 
 public class CipherHub : Hub {
     readonly IRelayStore _store;
@@ -97,6 +97,19 @@ public class CipherHub : Hub {
                     msg.Ts);
             }
         }
+    }
+
+    public async Task UpdatePublicDisplayName(string displayName) {
+        var userId = GetCallerId();
+        if (userId == null) throw new HubException("NOT_REGISTERED");
+        if (await IsRateLimitedAsync($"profile:{userId}", 30, TimeSpan.FromMinutes(1)))
+            throw new HubException("RATE_LIMITED");
+
+        var normalized = NormalizePublicDisplayName(displayName);
+        if (normalized == null)
+            throw new HubException("INVALID_DISPLAY_NAME");
+
+        await _store.SetPublicDisplayNameAsync(userId, normalized);
     }
 
     public async Task Send(string recipientId, string payload, string sig, long seqNum) {
@@ -292,5 +305,20 @@ public class CipherHub : Hub {
         } catch {
             return false;
         }
+    }
+
+    static string? NormalizePublicDisplayName(string? rawDisplayName) {
+        var trimmed = (rawDisplayName ?? "").Trim();
+        if (trimmed.Length is < 1 or > 48) {
+            return null;
+        }
+
+        foreach (var ch in trimmed) {
+            if (char.IsControl(ch)) {
+                return null;
+            }
+        }
+
+        return trimmed;
     }
 }

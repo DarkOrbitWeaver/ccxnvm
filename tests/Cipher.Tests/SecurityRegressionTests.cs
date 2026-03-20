@@ -106,6 +106,53 @@ public class SecurityRegressionTests {
     }
 
     [Fact]
+    public void GroupMembershipMetadataIsEncryptedAtRest() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            vault.SaveGroup(new GroupInfo {
+                GroupId = "grp-1",
+                Name = "Secret Group",
+                MemberIds = ["alice", "bob"],
+                GroupKey = RandomNumberGenerator.GetBytes(32),
+                OwnerId = "alice",
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            });
+        }
+
+        using var raw = new SqliteConnection($"Data Source={vaultPath};Mode=ReadOnly;");
+        raw.Open();
+
+        using var columnCmd = raw.CreateCommand();
+        columnCmd.CommandText = """
+            SELECT COUNT(*)
+            FROM pragma_table_info('groups')
+            WHERE name IN ('member_ids_enc', 'owner_id_enc')
+            """;
+        Assert.Equal(2L, Convert.ToInt64(columnCmd.ExecuteScalar()));
+
+        using var valueCmd = raw.CreateCommand();
+        valueCmd.CommandText = """
+            SELECT member_ids, member_ids_enc, owner_id, owner_id_enc
+            FROM groups
+            WHERE group_id = 'grp-1'
+            """;
+        using var reader = valueCmd.ExecuteReader();
+        Assert.True(reader.Read());
+
+        Assert.Equal("", reader.GetString(0));
+        Assert.Equal("", reader.GetString(2));
+
+        var memberIdsEnc = Assert.IsType<byte[]>(reader["member_ids_enc"]);
+        var ownerIdEnc = Assert.IsType<byte[]>(reader["owner_id_enc"]);
+        Assert.False(memberIdsEnc.AsSpan().SequenceEqual(Encoding.UTF8.GetBytes("alice,bob")));
+        Assert.False(ownerIdEnc.AsSpan().SequenceEqual(Encoding.UTF8.GetBytes("alice")));
+    }
+
+    [Fact]
     public async Task NextSeqNumReturnsUniqueValuesUnderConcurrency() {
         var tempDir = CreateTempDirectory();
         var vaultPath = Path.Combine(tempDir, "vault.db");
@@ -197,6 +244,19 @@ public class SecurityRegressionTests {
             userId,
             Convert.ToBase64String(signPub),
             Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
+
+        Assert.Null(parsed);
+    }
+
+    [Fact]
+    public void ParseVerifiedKeyBundleRejectsMalformedSigningKey() {
+        var (_, dhPub) = Crypto.GenerateDhKeys();
+
+        var parsed = NetworkClient.ParseVerifiedKeyBundle(
+            "some-user-id",
+            "some-user-id",
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)),
+            Convert.ToBase64String(dhPub));
 
         Assert.Null(parsed);
     }
@@ -307,6 +367,68 @@ public class SecurityRegressionTests {
         Assert.False(payloadEnc.AsSpan().SequenceEqual(Encoding.UTF8.GetBytes("payload-json")));
         Assert.False(sigEnc.AsSpan().SequenceEqual(Encoding.UTF8.GetBytes("signature-b64")));
         Assert.False(memberIdsEnc.AsSpan().SequenceEqual(Encoding.UTF8.GetBytes("alice,bob")));
+    }
+
+    [Fact]
+    public void OpeningLegacyVaultMigratesGroupMetadataToEncryptedColumns() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var raw = new SqliteConnection($"Data Source={vaultPath};")) {
+            raw.Open();
+            using var cmd = raw.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO settings(key, value) VALUES ('schema_version', '4');
+
+                CREATE TABLE groups (
+                    group_id TEXT PRIMARY KEY,
+                    name_enc BLOB NOT NULL,
+                    member_ids TEXT NOT NULL,
+                    group_key_enc BLOB NOT NULL,
+                    owner_id TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL
+                );
+
+                INSERT INTO groups
+                (group_id, name_enc, member_ids, group_key_enc, owner_id, created_at)
+                VALUES
+                ('legacy-group', $name, 'alice,bob', $groupKey, 'alice', 1234);
+                """;
+            cmd.Parameters.AddWithValue("$name", Crypto.EncryptStr(key, "Legacy Group"));
+            cmd.Parameters.AddWithValue("$groupKey", Crypto.EncryptField(key, RandomNumberGenerator.GetBytes(32)));
+            cmd.ExecuteNonQuery();
+        }
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            var groups = vault.LoadGroups();
+
+            Assert.Single(groups);
+            Assert.Equal(["alice", "bob"], groups[0].MemberIds);
+            Assert.Equal("alice", groups[0].OwnerId);
+            Assert.Contains(vault.LastMaintenanceActions, action => action.Contains("migrated schema", StringComparison.OrdinalIgnoreCase));
+        }
+
+        using var migrated = new SqliteConnection($"Data Source={vaultPath};Mode=ReadOnly;");
+        migrated.Open();
+
+        using var valueCmd = migrated.CreateCommand();
+        valueCmd.CommandText = """
+            SELECT member_ids, member_ids_enc, owner_id, owner_id_enc
+            FROM groups
+            WHERE group_id = 'legacy-group'
+            """;
+        using var reader = valueCmd.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal("", reader.GetString(0));
+        Assert.Equal("", reader.GetString(2));
+        Assert.IsType<byte[]>(reader["member_ids_enc"]);
+        Assert.IsType<byte[]>(reader["owner_id_enc"]);
     }
 
     [Theory]

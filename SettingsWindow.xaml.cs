@@ -12,7 +12,6 @@ public partial class SettingsWindow : Window {
 
     public SettingsWindow() {
         InitializeComponent();
-        ApplyChatFontSizeSelection(17d);
     }
 
     public event Action<string>? ThemeRequested;

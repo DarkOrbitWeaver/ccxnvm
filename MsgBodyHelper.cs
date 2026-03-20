@@ -118,6 +118,14 @@ public static class MsgBodyHelper {
     public static bool ContainsEmoji(string? text) =>
         CountEmojiElements(text ?? "") > 0;
 
+    public static ImageSource? GetEmojiImageSource(string emoji) {
+        if (!EmojiEntries.TryGetValue(emoji, out var entry)) {
+            return null;
+        }
+
+        return GetEmojiImageSource(entry);
+    }
+
     static FlowDocument BuildDocument(MessageViewModel? vm, double fontSize) {
         var text = vm?.Content ?? "";
         var renderProfile = BuildRenderProfile(text, fontSize);
@@ -312,9 +320,13 @@ public static class MsgBodyHelper {
                 return true;
             if (value is >= 0x1F1E6 and <= 0x1F1FF)
                 return true;
+            if (value is >= 0x2300 and <= 0x23FF)
+                return true;
             if (value is >= 0x1F300 and <= 0x1FAFF)
                 return true;
             if (value is >= 0x2600 and <= 0x27BF)
+                return true;
+            if (value is >= 0x2B00 and <= 0x2BFF)
                 return true;
         }
 

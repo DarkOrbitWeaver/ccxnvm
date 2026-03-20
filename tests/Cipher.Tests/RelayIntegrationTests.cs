@@ -160,6 +160,24 @@ public class RelayIntegrationTests {
         Assert.Equal(Convert.ToBase64String(bob.DhPubKey), Convert.ToBase64String(keys.Value.dhPub));
     }
 
+    [Fact]
+    public async Task RegisteredUserProfileIncludesPublicDisplayName() {
+        var alice = CreateUser("alice");
+        var bob = CreateUser("Bob Builder");
+        await using var aliceClient = new NetworkClient();
+        await using var bobClient = new NetworkClient();
+
+        await aliceClient.ConnectAsync(alice);
+        await bobClient.ConnectAsync(bob);
+
+        var profile = await aliceClient.GetUserProfileAsync(bob.UserId);
+
+        Assert.NotNull(profile);
+        Assert.Equal("Bob Builder", profile!.Value.DisplayName);
+        Assert.Equal(Convert.ToBase64String(bob.SignPubKey), Convert.ToBase64String(profile.Value.SignPubKey));
+        Assert.Equal(Convert.ToBase64String(bob.DhPubKey), Convert.ToBase64String(profile.Value.DhPubKey));
+    }
+
     LocalUser CreateUser(string displayName) {
         var (signPriv, signPub) = Crypto.GenerateSigningKeys();
         var (dhPriv, dhPub) = Crypto.GenerateDhKeys();

@@ -148,14 +148,20 @@
                     <GradientStop Color="#0A1320" Offset="1" />
                 </LinearGradientBrush>
             </Grid.Background>
-            <Border Width="480"
-                    Padding="36"
-                    CornerRadius="24"
-                    Background="{StaticResource GlassOverlay}"
-                    BorderBrush="{DynamicResource GlassBorder}"
-                    BorderThickness="1"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Padding="0,24">
+                <Grid>
+                    <Border Width="480"
+                            MaxWidth="480"
+                            Padding="36"
+                            Margin="0,0,0,12"
+                            CornerRadius="24"
+                            Background="{StaticResource GlassOverlay}"
+                            BorderBrush="{DynamicResource GlassBorder}"
+                            BorderThickness="1"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center">
                 <StackPanel>
                     <TextBlock x:Name="LegacyLogo"
                                Visibility="Collapsed"
@@ -250,6 +256,8 @@
                                TextWrapping="Wrap">vault stored in %APPDATA%\Cipher</TextBlock>
                     </StackPanel>
             </Border>
+                </Grid>
+            </ScrollViewer>
         </Grid>
 
         <Grid x:Name="ChatPanel" Visibility="Collapsed">
@@ -678,26 +686,7 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Grid Grid.Column="0">
-                                <Border Margin="2"
-                                        CornerRadius="10"
-                                        Background="Transparent"
-                                        IsHitTestVisible="False"
-                                        ClipToBounds="True">
-                                    <TextBlock x:Name="InputPreview"
-                                               Margin="13,10,13,10"
-                                               Visibility="Collapsed"
-                                               FontFamily="{StaticResource ChatFont}"
-                                               FontSize="{DynamicResource ComposerFontSize}"
-                                               Foreground="{StaticResource White}"
-                                               IsHitTestVisible="False"
-                                               local:MsgBodyHelper.PlainText="{Binding ElementName=InputBox, Path=Text}"
-                                               local:MsgBodyHelper.RenderFontSize="{DynamicResource ComposerFontSize}">
-                                        <TextBlock.RenderTransform>
-                                            <TranslateTransform x:Name="InputPreviewTransform" />
-                                        </TextBlock.RenderTransform>
-                                    </TextBlock>
-                                </Border>
-                                <TextBox x:Name="InputBox" Style="{StaticResource TermInput}" FontFamily="{StaticResource ChatFont}" FontSize="{DynamicResource ComposerFontSize}" MinHeight="52" MaxHeight="132" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" IsEnabled="False" KeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged" ToolTip="Enter to send. Shift+Enter for a new line." />
+                                <RichTextBox x:Name="InputBox" Style="{StaticResource TermRichInput}" FontFamily="{StaticResource ChatFont}" FontSize="{DynamicResource ComposerFontSize}" MinHeight="52" MaxHeight="132" IsEnabled="False" KeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged" ToolTip="Enter to send. Shift+Enter for a new line." />
                                 <TextBlock x:Name="InputPlaceholder" Margin="18,0,18,0" VerticalAlignment="Center" Foreground="{StaticResource Dim}" FontSize="{DynamicResource ComposerPlaceholderFontSize}" Opacity="0.82" IsHitTestVisible="False" Text="Choose a conversation to start chatting" />
                             </Grid>
                             <Button x:Name="BtnEmojiPicker" Grid.Column="1" Margin="10,0,0,0" Padding="10,10" FontSize="16" Style="{StaticResource TermBtn}" Click="BtnEmojiPicker_Click" ToolTip="Open OpenMoji picker">
@@ -748,9 +737,14 @@
                     </Border>
                     <StackPanel x:Name="AddDmForm">
                         <TextBlock Text="Contact user ID" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,6" />
-                        <TextBox x:Name="AddContactId" Style="{StaticResource TermInput}" Margin="0,0,0,12" />
-                        <TextBlock Text="Display name" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,6" />
-                        <TextBox x:Name="AddContactName" Style="{StaticResource TermInput}" Margin="0,0,0,18" />
+                        <TextBox x:Name="AddContactId" Style="{StaticResource TermInput}" Margin="0,0,0,12" TextChanged="AddContactId_TextChanged" />
+                        <TextBlock Text="Saved name (editable)" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,6" />
+                        <TextBox x:Name="AddContactName" Style="{StaticResource TermInput}" Margin="0,0,0,18" TextChanged="AddContactName_TextChanged" />
+                        <TextBlock Text="ZLABO fills this from their public display name when available. You can still rename them locally anytime."
+                                   Foreground="{StaticResource Dim}"
+                                   FontSize="11"
+                                   Margin="0,-10,0,18"
+                                   TextWrapping="Wrap" />
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition />
@@ -776,6 +770,125 @@
                         </Grid>
                     </StackPanel>
                 </StackPanel>
+            </Border>
+        </Grid>
+
+        <Grid x:Name="InviteOverlay" Visibility="Collapsed" Panel.ZIndex="21" Background="#B3000000">
+            <Border Width="500" MaxHeight="620" Padding="24" CornerRadius="22" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <TextBlock x:Name="InviteOverlayTitle" Text="Invite Friends" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource White}" />
+                        <TextBlock x:Name="InviteOverlaySubtitle" Margin="0,6,0,0" Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <Border x:Name="InviteStatusPanel" Grid.Row="1" Visibility="Collapsed" Margin="0,14,0,0" Padding="10,8" Background="#1A2432" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" CornerRadius="10">
+                        <TextBlock x:Name="InviteStatus" Visibility="Collapsed" FontSize="12" Foreground="{StaticResource Red}" TextWrapping="Wrap" />
+                    </Border>
+                    <StackPanel Grid.Row="2" Margin="0,14,0,0">
+                        <TextBlock Text="Search saved friends" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,6" />
+                        <TextBox x:Name="InviteSearchBox" Style="{StaticResource TermInput}" TextChanged="InviteSearchBox_TextChanged" />
+                    </StackPanel>
+                    <Grid Grid.Row="3" Margin="0,14,0,18">
+                        <Border Background="#12000000" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" CornerRadius="14">
+                            <Grid>
+                                <TextBlock x:Name="InviteEmptyHint"
+                                           Margin="20"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Foreground="{StaticResource Muted}"
+                                           FontSize="12"
+                                           TextAlignment="Center"
+                                           TextWrapping="Wrap" />
+                                <ListBox x:Name="InviteContactsList"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Padding="10"
+                                         Focusable="False"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Padding" Value="0" />
+                                            <Setter Property="Margin" Value="0,0,0,8" />
+                                            <Setter Property="Focusable" Value="False" />
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="BorderThickness" Value="0" />
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <ContentPresenter />
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Padding="12,10"
+                                                    CornerRadius="14"
+                                                    Background="#14000000"
+                                                    BorderBrush="{DynamicResource GlassBorder}"
+                                                    BorderThickness="1"
+                                                    Opacity="{Binding RowOpacity}">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <CheckBox IsChecked="{Binding IsSelected}"
+                                                              IsEnabled="{Binding CanInvite}"
+                                                              VerticalAlignment="Center"
+                                                              Margin="0,0,12,0" />
+                                                    <StackPanel Grid.Column="1">
+                                                        <TextBlock Text="{Binding DisplayName}"
+                                                                   Foreground="{StaticResource White}"
+                                                                   FontSize="13"
+                                                                   FontWeight="SemiBold"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding DetailText}"
+                                                                   Margin="0,3,0,0"
+                                                                   Foreground="{StaticResource Muted}"
+                                                                   FontSize="11"
+                                                                   TextWrapping="Wrap" />
+                                                    </StackPanel>
+                                                    <Border Grid.Column="2"
+                                                            Margin="12,0,0,0"
+                                                            Padding="8,4"
+                                                            CornerRadius="10"
+                                                            Background="{DynamicResource ConversationSelected}"
+                                                            BorderBrush="{DynamicResource AccentButtonBorder}"
+                                                            BorderThickness="1"
+                                                            VerticalAlignment="Center"
+                                                            Visibility="{Binding HasBadge, Converter={StaticResource BoolVis}}">
+                                                        <TextBlock Text="{Binding BadgeText}"
+                                                                   Foreground="{StaticResource White}"
+                                                                   FontSize="10"
+                                                                   FontWeight="SemiBold" />
+                                                    </Border>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <Grid Grid.Row="4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="BtnConfirmInviteMembers" Content="Invite selected" Style="{StaticResource GroupBtn}" Click="BtnConfirmInviteMembers_Click" />
+                        <Button Grid.Column="1" Margin="10,0,0,0" Content="Close" Style="{StaticResource TermBtn}" Click="BtnCloseOverlay_Click" />
+                    </Grid>
+                </Grid>
             </Border>
         </Grid>
 

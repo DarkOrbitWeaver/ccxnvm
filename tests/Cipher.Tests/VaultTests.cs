@@ -1,4 +1,5 @@
 using Cipher;
+using Microsoft.Data.Sqlite;
 using System.Security.Cryptography;
 
 namespace Cipher.Tests;
@@ -69,6 +70,41 @@ public class VaultTests {
     }
 
     [Fact]
+    public void MessagePagingRemainsStableWhenTimestampsMatch() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+        const string conversationId = "dm:stable:ties";
+
+        using var vault = new Vault();
+        vault.Open(vaultPath, key);
+
+        for (var i = 1; i <= 60; i++) {
+            vault.SaveMessage(new Message {
+                Id = $"tie-{i:D3}",
+                ConversationId = conversationId,
+                SenderId = i % 2 == 0 ? "alpha" : "beta",
+                Content = $"message {i}",
+                Timestamp = 777,
+                SeqNum = i,
+                IsMine = i % 2 == 0,
+                Status = MessageStatus.Delivered
+            });
+        }
+
+        var newestPage = vault.LoadMessages(conversationId, 0, 50);
+        var olderPage = vault.LoadMessages(conversationId, 50, 50);
+        var ids = newestPage.Concat(olderPage).Select(message => message.Id).ToList();
+
+        Assert.Equal(60, ids.Count);
+        Assert.Equal(60, ids.Distinct().Count());
+        Assert.Equal("tie-011", newestPage.First().Id);
+        Assert.Equal("tie-060", newestPage.Last().Id);
+        Assert.Equal("tie-001", olderPage.First().Id);
+        Assert.Equal("tie-010", olderPage.Last().Id);
+    }
+
+    [Fact]
     public void OutboxRoundTripPersistsQueuedMessages() {
         var tempDir = CreateTempDirectory();
         var vaultPath = Path.Combine(tempDir, "vault.db");
@@ -84,6 +120,42 @@ public class VaultTests {
         Assert.Equal("out-1", queued[0].Id);
         Assert.Equal("bob", queued[0].RecipientId);
         Assert.Equal(12, queued[0].SeqNum);
+    }
+
+    [Fact]
+    public void OutboxSkipsItemsThatExceededRetryCap() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using var vault = new Vault();
+        vault.Open(vaultPath, key);
+        vault.EnqueueOutbox("out-cap", "bob", "payload", "sig", 12);
+
+        for (var i = 0; i < 100; i++) {
+            vault.IncrementOutboxAttempts("out-cap");
+        }
+
+        Assert.Empty(vault.LoadOutbox());
+    }
+
+    [Fact]
+    public void IncomingSeqStatePersistsAcrossReopen() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            vault.SaveIncomingSeqState("dm:alice:bob", "bob", 12);
+            vault.SaveIncomingSeqState("dm:alice:bob", "bob", 8);
+        }
+
+        using var reopened = new Vault();
+        reopened.Open(vaultPath, key);
+
+        var state = reopened.LoadIncomingSeqState("dm:alice:bob");
+        Assert.Equal(12, state["bob"]);
     }
 
     [Fact]
@@ -156,6 +228,47 @@ public class VaultTests {
 
         var groups = reopened.LoadGroups();
         Assert.Single(groups);
+        Assert.Equal("owner-001", groups[0].OwnerId);
+    }
+
+    [Fact]
+    public void LoadGroupsFallsBackToLegacyMetadataWhenEncryptedColumnsHaveInvalidType() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            vault.SaveGroup(new GroupInfo {
+                GroupId = "grp-legacy-fallback",
+                Name = "fallback",
+                MemberIds = new List<string> { "owner-001", "friend-002" },
+                GroupKey = RandomNumberGenerator.GetBytes(32),
+                OwnerId = "owner-001",
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            });
+        }
+
+        using (var conn = new SqliteConnection($"Data Source={vaultPath}")) {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                UPDATE groups
+                SET member_ids='owner-001,friend-002',
+                    owner_id='owner-001',
+                    member_ids_enc='not-a-blob',
+                    owner_id_enc='still-not-a-blob'
+                WHERE group_id='grp-legacy-fallback'
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        using var reopened = new Vault();
+        reopened.Open(vaultPath, key);
+
+        var groups = reopened.LoadGroups();
+        Assert.Single(groups);
+        Assert.Equal(["owner-001", "friend-002"], groups[0].MemberIds);
         Assert.Equal("owner-001", groups[0].OwnerId);
     }
 

@@ -9,6 +9,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
@@ -24,6 +25,7 @@ using Orientation = System.Windows.Controls.Orientation;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -71,6 +73,10 @@ static class B {
 }
 
 // ── View Models ──────────────────────────────────────────────────────────────
+
+static class UiBrushCache {
+    internal static readonly BrushConverter Converter = new();
+}
 
 public class ConvViewModel : INotifyPropertyChanged {
     static readonly FontFamily ConversationIconFont = new("Segoe Fluent Icons, Segoe MDL2 Assets");
@@ -243,6 +249,37 @@ public sealed class UnreadSeparatorViewModel {
     public string Label { get; init; } = "new messages";
 }
 
+public sealed class InviteContactOptionViewModel : INotifyPropertyChanged {
+    bool _isSelected;
+
+    public Contact Contact { get; init; } = new();
+    public bool IsAlreadyMember { get; init; }
+    public string GroupName { get; init; } = "";
+
+    public string UserId => Contact.UserId;
+    public string DisplayName => string.IsNullOrWhiteSpace(Contact.DisplayName)
+        ? MainWindow.ShortUserId(Contact.UserId)
+        : Contact.DisplayName;
+    public string DetailText => IsAlreadyMember
+        ? $"ID {MainWindow.ShortUserId(Contact.UserId)} · already in {GroupName}"
+        : $"ID {MainWindow.ShortUserId(Contact.UserId)}";
+    public string BadgeText => IsAlreadyMember ? "in group" : "ready";
+    public bool HasBadge => !string.IsNullOrWhiteSpace(BadgeText);
+    public bool CanInvite => !IsAlreadyMember;
+    public double RowOpacity => CanInvite ? 1d : 0.68d;
+
+    public bool IsSelected {
+        get => _isSelected;
+        set {
+            if (_isSelected == value) return;
+            _isSelected = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
+
 enum ToastSeverity {
     Info,
     Warning,
@@ -302,7 +339,6 @@ public partial class MainWindow : Window {
     bool _loadingHistory = false;
     bool _isNearBottom = true;
     ScrollViewer? _msgScrollViewer;
-    ScrollViewer? _inputScrollViewer;
 
     // Per-conversation shared secrets (cached in memory, not re-derived every message)
     readonly Dictionary<string, byte[]> _convKeys = [];
@@ -330,9 +366,9 @@ public partial class MainWindow : Window {
     DispatcherTimer? _outboxTimer;
     DispatcherTimer? _typingIndicatorHideTimer;
     DispatcherTimer? _typingIndicatorPulseTimer;
+    DispatcherTimer? _myIdResetTimer;
     bool _networkEventsWired;
     bool _flushingOutbox;
-    bool _groupInviteMode;
     int _typingIndicatorDotCount;
     string _activeThemeFile = DefaultThemeFile;
     AppShellPreferences _shellPreferences = new();
@@ -341,11 +377,19 @@ public partial class MainWindow : Window {
     bool _exitRequested;
     bool _trayCloseHintShown;
     IEnumerable<MessageViewModel> MessageItems => _messages.OfType<MessageViewModel>();
+    readonly ObservableCollection<InviteContactOptionViewModel> _inviteContacts = [];
+    List<InviteContactOptionViewModel> _inviteContactSource = [];
+    CancellationTokenSource? _addContactLookupCts;
+    string _lastSuggestedAddContactId = "";
+    string _lastSuggestedAddContactName = "";
+    bool _suppressAddContactNameEvents;
+    object? _myIdOriginalContent;
 
     // ── Init ──────────────────────────────────────────────────────────────
 
     public MainWindow() {
         InitializeComponent();
+        InitializeComposerInput();
         AppLog.Info("ui", "main window initialized");
         InitializeShellPreferences();
         ApplyTheme(_shellPreferences.ThemeFile, persist: false);
@@ -357,6 +401,7 @@ public partial class MainWindow : Window {
         MessageList.ItemsSource = _messages;
         ToastHost.ItemsSource = _toasts;
         ConvList.ItemsSource = _convs;
+        InviteContactsList.ItemsSource = _inviteContacts;
         LoginRememberSession.IsChecked = Session.HasSession();
         RegisterRememberSession.IsChecked = false;
         InitializeReleaseFeatures();
@@ -370,8 +415,6 @@ public partial class MainWindow : Window {
             if (_msgScrollViewer != null)
                 _msgScrollViewer.ScrollChanged += OnScrollChanged;
         };
-        InputBox.Loaded += (_, _) => InitializeComposerPreview();
-
         // Outbox retry timer: every 5 seconds try to flush pending messages
         _outboxTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _outboxTimer.Tick += (_, _) => RunUiTask(FlushOutboxAsync, "flush outbox", showSidebarErrors: false);
@@ -569,12 +612,122 @@ public partial class MainWindow : Window {
         };
     }
 
+    void InitializeComposerInput() {
+        if (InputBox == null) return;
+        InputBox.Document = CreateComposerDocument();
+    }
+
+    FlowDocument CreateComposerDocument() {
+        var fontSize = GetCurrentComposerFontSize();
+        var doc = new FlowDocument {
+            PagePadding = new Thickness(0),
+            Background = System.Windows.Media.Brushes.Transparent,
+            TextAlignment = TextAlignment.Left
+        };
+        doc.Blocks.Add(new Paragraph {
+            Margin = new Thickness(0),
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            LineHeight = fontSize * 1.2
+        });
+        return doc;
+    }
+
+    double GetCurrentComposerFontSize() =>
+        Application.Current?.TryFindResource("ComposerFontSize") is double fontSize
+            ? fontSize
+            : GetCurrentChatFontSize();
+
+    Paragraph EnsureComposerParagraph() {
+        if (InputBox.Document == null) {
+            InputBox.Document = CreateComposerDocument();
+        }
+
+        if (InputBox.Document.Blocks.FirstBlock is Paragraph paragraph) {
+            paragraph.LineHeight = GetCurrentComposerFontSize() * 1.2;
+            return paragraph;
+        }
+
+        var next = new Paragraph {
+            Margin = new Thickness(0),
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            LineHeight = GetCurrentComposerFontSize() * 1.2
+        };
+        InputBox.Document.Blocks.Clear();
+        InputBox.Document.Blocks.Add(next);
+        return next;
+    }
+
+    string GetComposerText() {
+        if (InputBox?.Document == null) return "";
+
+        var builder = new StringBuilder();
+        var firstParagraph = true;
+        foreach (var paragraph in InputBox.Document.Blocks.OfType<Paragraph>()) {
+            if (!firstParagraph) {
+                builder.AppendLine();
+            }
+
+            foreach (var inline in paragraph.Inlines) {
+                AppendComposerInlineText(builder, inline);
+            }
+
+            firstParagraph = false;
+        }
+
+        return builder.ToString();
+    }
+
+    static void AppendComposerInlineText(StringBuilder builder, Inline inline) {
+        switch (inline) {
+            case Run run:
+                builder.Append(run.Text);
+                break;
+            case LineBreak:
+                builder.AppendLine();
+                break;
+            case Span span:
+                foreach (var child in span.Inlines) {
+                    AppendComposerInlineText(builder, child);
+                }
+                break;
+            case InlineUIContainer { Child: FrameworkElement { Tag: string emoji } }:
+                builder.Append(emoji);
+                break;
+        }
+    }
+
+    void ClearComposer() {
+        InputBox.Document = CreateComposerDocument();
+        InputBox.CaretPosition = InputBox.Document.ContentEnd;
+        UpdateComposerState();
+    }
+
+    void InsertComposerLineBreak() {
+        EnsureComposerParagraph();
+
+        InputBox.BeginChange();
+        try {
+            if (!InputBox.Selection.IsEmpty) {
+                InputBox.Selection.Text = "";
+            }
+
+            var insertion = InputBox.CaretPosition.GetInsertionPosition(LogicalDirection.Forward)
+                ?? InputBox.Document.ContentEnd;
+            var lineBreak = new LineBreak(insertion);
+            InputBox.CaretPosition = lineBreak.ElementEnd.GetInsertionPosition(LogicalDirection.Forward)
+                ?? InputBox.Document.ContentEnd;
+        } finally {
+            InputBox.EndChange();
+        }
+
+        InputBox.Focus();
+    }
+
     void UpdateComposerState() {
         var canCompose = _activeConv != null && InputBox.IsEnabled;
         BtnEmojiPicker.IsEnabled = canCompose;
-        BtnSend.IsEnabled = canCompose && !string.IsNullOrWhiteSpace(InputBox.Text);
+        BtnSend.IsEnabled = canCompose && !string.IsNullOrWhiteSpace(GetComposerText());
         UpdateInputPlaceholderState();
-        UpdateInputPreviewState();
     }
 
     void UpdateInputPlaceholderState() {
@@ -583,45 +736,13 @@ public partial class MainWindow : Window {
         InputPlaceholder.Text = _activeConv == null
             ? "Choose a conversation to start chatting"
             : "Type a message...";
-        InputPlaceholder.Visibility = string.IsNullOrWhiteSpace(InputBox.Text)
+        InputPlaceholder.Visibility = string.IsNullOrWhiteSpace(GetComposerText())
             ? Visibility.Visible
             : Visibility.Collapsed;
     }
 
-    void InitializeComposerPreview() {
-        if (InputBox == null) return;
-        _inputScrollViewer = GetScrollViewer(InputBox);
-        if (_inputScrollViewer != null) {
-            _inputScrollViewer.ScrollChanged -= ComposerPreviewScrollChanged;
-            _inputScrollViewer.ScrollChanged += ComposerPreviewScrollChanged;
-        }
-
-        UpdateInputPreviewState();
-    }
-
-    void ComposerPreviewScrollChanged(object? sender, ScrollChangedEventArgs e) {
-        if (InputPreviewTransform != null) {
-            InputPreviewTransform.Y = -e.VerticalOffset;
-        }
-    }
-
-    void UpdateInputPreviewState() {
-        if (InputBox == null || InputPreview == null) return;
-
-        var hasEmoji = MsgBodyHelper.ContainsEmoji(InputBox.Text);
-        var showPreview = hasEmoji && !string.IsNullOrWhiteSpace(InputBox.Text);
-        InputPreview.Visibility = showPreview ? Visibility.Visible : Visibility.Collapsed;
-        InputBox.Foreground = showPreview
-            ? System.Windows.Media.Brushes.Transparent
-            : (Brush)FindResource("White");
-
-        if (InputPreviewTransform != null) {
-            InputPreviewTransform.Y = -(_inputScrollViewer?.VerticalOffset ?? 0);
-        }
-    }
-
     void StartTypingIndicator() {
-        if (_activeConv == null || string.IsNullOrWhiteSpace(InputBox.Text)) {
+        if (_activeConv == null || string.IsNullOrWhiteSpace(GetComposerText())) {
             HideTypingIndicator();
             return;
         }
@@ -756,9 +877,42 @@ public partial class MainWindow : Window {
 
     void InsertEmoji(string emoji) {
         if (string.IsNullOrEmpty(emoji)) return;
-        var caret = InputBox.CaretIndex;
-        InputBox.Text = InputBox.Text.Insert(caret, emoji);
-        InputBox.CaretIndex = caret + emoji.Length;
+        EnsureComposerParagraph();
+
+        InputBox.BeginChange();
+        try {
+            if (!InputBox.Selection.IsEmpty) {
+                InputBox.Selection.Text = "";
+            }
+
+            var insertion = InputBox.CaretPosition.GetInsertionPosition(LogicalDirection.Forward)
+                ?? InputBox.Document.ContentEnd;
+            var source = MsgBodyHelper.GetEmojiImageSource(emoji);
+            if (source != null) {
+                var size = Math.Max(GetCurrentComposerFontSize(), GetCurrentComposerFontSize() * 1.12);
+                var image = new Image {
+                    Source = source,
+                    Width = size,
+                    Height = size,
+                    Stretch = Stretch.Uniform,
+                    Margin = new Thickness(0, -1, 0, -3),
+                    Tag = emoji
+                };
+
+                var inline = new InlineUIContainer(image, insertion) {
+                    BaselineAlignment = BaselineAlignment.Center
+                };
+                InputBox.CaretPosition = inline.ElementEnd.GetInsertionPosition(LogicalDirection.Forward)
+                    ?? InputBox.Document.ContentEnd;
+            } else {
+                insertion.InsertTextInRun(emoji);
+                InputBox.CaretPosition = insertion.GetPositionAtOffset(emoji.Length, LogicalDirection.Forward)
+                    ?? InputBox.Document.ContentEnd;
+            }
+        } finally {
+            InputBox.EndChange();
+        }
+
         InputBox.Focus();
     }
 
@@ -870,9 +1024,10 @@ public partial class MainWindow : Window {
         BtnLogin.IsEnabled = false;
         AppLog.Info("auth", $"manual login started - relay={AppTelemetry.DescribeRelay(serverUrl)}");
 
+        byte[]? key = null;
         try {
             var salt = await Task.Run(() => System.IO.File.ReadAllBytes(Vault.SaltPath));
-            var key = await Task.Run(() => Crypto.DeriveVaultKey(pass, salt));
+            key = await Task.Run(() => Crypto.DeriveVaultKey(pass, salt));
             _vault.Open(Vault.DefaultVaultPath, key);
             _user = _vault.LoadIdentity();
 
@@ -900,6 +1055,8 @@ public partial class MainWindow : Window {
             _vault = new Vault();
             SetAuthStatus(FriendlyErrors.ToUserMessage(ex), true);
             BtnLogin.IsEnabled = true;
+        } finally {
+            Crypto.Wipe(key);
         }
     }
 
@@ -925,6 +1082,7 @@ public partial class MainWindow : Window {
         BtnRegister.IsEnabled = false;
         AppLog.Info("auth", $"vault creation started - display_name={name} relay={AppTelemetry.DescribeRelay(serverUrl)}");
 
+        byte[]? key = null;
         try {
             // Generate identity
             var (signPriv, signPub) = await Task.Run(Crypto.GenerateSigningKeys);
@@ -933,7 +1091,7 @@ public partial class MainWindow : Window {
 
             // Derive vault key
             var salt = Crypto.GenerateSalt();
-            var key = await Task.Run(() => Crypto.DeriveVaultKey(pass, salt));
+            key = await Task.Run(() => Crypto.DeriveVaultKey(pass, salt));
 
             // Save salt (unencrypted, needed to derive key on login)
             System.IO.Directory.CreateDirectory(
@@ -963,6 +1121,8 @@ public partial class MainWindow : Window {
             AppLog.Error("auth", "vault creation failed", ex);
             SetAuthStatus(FriendlyErrors.ToUserMessage(ex), true);
             BtnRegister.IsEnabled = true;
+        } finally {
+            Crypto.Wipe(key);
         }
     }
 
@@ -1124,6 +1284,8 @@ public partial class MainWindow : Window {
 
     void LoadConversations() {
         _convs.Clear();
+        _seqTracker.Clear();
+        _seqTrackerTouched.Clear();
         var contacts = _vault.LoadContacts();
         foreach (var c in contacts) {
             var conv = new ConvViewModel {
@@ -1133,6 +1295,7 @@ public partial class MainWindow : Window {
                 ContactData = c,
                 IsMuted = IsConversationMuted(c.ConversationId ?? c.UserId)
             };
+            PrimeReplayTracker(conv.Id);
             UpdateConversationSnapshot(conv);
             _convs.Add(conv);
         }
@@ -1145,6 +1308,7 @@ public partial class MainWindow : Window {
                 GroupData = g,
                 IsMuted = IsConversationMuted(g.GroupId)
             };
+            PrimeReplayTracker(conv.Id);
             UpdateConversationSnapshot(conv);
             _convs.Add(conv);
         }
@@ -1439,7 +1603,7 @@ public partial class MainWindow : Window {
         }
     }
 
-    static string ShortUserId(string? userId) {
+    internal static string ShortUserId(string? userId) {
         if (string.IsNullOrWhiteSpace(userId)) return "";
         var trimmed = userId.Trim();
         return trimmed.Length <= 8 ? trimmed : trimmed[..8];
@@ -1752,6 +1916,11 @@ public partial class MainWindow : Window {
 
         // Load on background thread
         var older = await Task.Run(() => _vault.LoadMessages(convId, _msgOffset, 50));
+        if (!string.Equals(_activeConvId, convId, StringComparison.Ordinal)) {
+            _loadingHistory = false;
+            LoadMoreBar.Visibility = Visibility.Collapsed;
+            return;
+        }
         _msgOffset += older.Count;
         HydrateReceiptCache(older);
 
@@ -1801,7 +1970,6 @@ public partial class MainWindow : Window {
                 MessageList.ScrollIntoView(vm);
                 ScrollToBottom();
             }, DispatcherPriority.Background);
-            Dispatcher.InvokeAsync(ScrollToBottom, DispatcherPriority.Loaded);
         }
     }
 
@@ -1817,14 +1985,20 @@ public partial class MainWindow : Window {
     // ── Sending messages ──────────────────────────────────────────────────
 
     void InputBox_KeyDown(object s, KeyEventArgs e) {
-        if ((e.Key is Key.Enter or Key.Return) && !Keyboard.IsKeyDown(Key.LeftShift) &&
-            !Keyboard.IsKeyDown(Key.RightShift)) {
+        if (e.Key is not Key.Enter and not Key.Return) return;
+
+        if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift)) {
             e.Handled = true;
-            RunUiTask(SendMessageAsync, "send message");
+            InsertComposerLineBreak();
+            return;
         }
+
+        e.Handled = true;
+        RunUiTask(SendMessageAsync, "send message");
     }
 
     void InputBox_TextChanged(object s, TextChangedEventArgs e) {
+        EnsureComposerParagraph();
         UpdateComposerState();
         HideTypingIndicator();
     }
@@ -1833,10 +2007,10 @@ public partial class MainWindow : Window {
         RunUiTask(SendMessageAsync, "send message");
 
     async Task SendMessageAsync() {
-        var text = InputBox.Text.Trim();
+        var text = GetComposerText().Trim();
         if (string.IsNullOrEmpty(text) || _activeConv == null || _user == null) return;
         AppLog.Info("send", $"queueing {_activeConv.IsGroup switch { true => "group", false => "direct" }} message for {AppTelemetry.DescribeConversation(_activeConvId, _activeConv.IsGroup)} length={text.Length}");
-        InputBox.Clear();
+        ClearComposer();
 
         var msg = new Message {
             ConversationId = _activeConvId,
@@ -2085,11 +2259,20 @@ public partial class MainWindow : Window {
 
     // ── Replay protection ─────────────────────────────────────────────────
 
+    void PrimeReplayTracker(string convId) {
+        var persisted = _vault.LoadIncomingSeqState(convId);
+        if (persisted.Count == 0) return;
+
+        _seqTracker[convId] = persisted;
+        _seqTrackerTouched[convId] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
     bool IsNewSeq(string convId, string senderId, long seq) {
         if (!_seqTracker.TryGetValue(convId, out var senders))
             _seqTracker[convId] = senders = [];
         if (senders.TryGetValue(senderId, out var last) && seq <= last) return false;
         senders[senderId] = seq;
+        _vault.SaveIncomingSeqState(convId, senderId, seq);
         _seqTrackerTouched[convId] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         if (_seqTrackerTouched.Count > MaxSeqTrackerConversations) {
             var staleConvId = _seqTrackerTouched
@@ -2276,7 +2459,7 @@ public partial class MainWindow : Window {
         foreach (var ch in userId)
             hash = (hash ^ ch) * 16777619;
         var idx = (int)(hash % (uint)palette.Length);
-        var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(palette[idx])!;
+        var brush = (SolidColorBrush)UiBrushCache.Converter.ConvertFromString(palette[idx])!;
         brush.Freeze();
         _userColorCache[userId] = brush;
         return brush;
@@ -2379,7 +2562,7 @@ public partial class MainWindow : Window {
         var sig = Crypto.SignPayload(_user.SignPrivKey, payload, receiptMessage.SeqNum);
         var sent = await _net.SendDmAsync(senderContact.UserId, payload, sig, receiptMessage.SeqNum);
         if (!sent) {
-            _vault.EnqueueOutbox(Guid.NewGuid().ToString("N"), senderContact.UserId, payload, sig, receiptMessage.SeqNum);
+            _vault.EnqueueOutbox(receiptMessage.Id, senderContact.UserId, payload, sig, receiptMessage.SeqNum);
             AppLog.Warn("receipt", $"queued direct receipt status={status} msg={AppTelemetry.MaskUserId(incoming.Id)} to={AppTelemetry.MaskUserId(senderContact.UserId)}");
         } else {
             AppLog.Info("receipt", $"sent direct receipt status={status} msg={AppTelemetry.MaskUserId(incoming.Id)} to={AppTelemetry.MaskUserId(senderContact.UserId)}");
@@ -2408,7 +2591,7 @@ public partial class MainWindow : Window {
         var sig = Crypto.SignPayload(_user.SignPrivKey, payload, receiptMessage.SeqNum);
         var sent = await _net.SendDmAsync(senderContact.UserId, payload, sig, receiptMessage.SeqNum);
         if (!sent) {
-            _vault.EnqueueOutbox(Guid.NewGuid().ToString("N"), senderContact.UserId, payload, sig, receiptMessage.SeqNum);
+            _vault.EnqueueOutbox(receiptMessage.Id, senderContact.UserId, payload, sig, receiptMessage.SeqNum);
             AppLog.Warn("receipt", $"queued group receipt status={status} msg={AppTelemetry.MaskUserId(incoming.Id)} to={AppTelemetry.MaskUserId(senderContact.UserId)}");
         } else {
             AppLog.Info("receipt", $"sent group receipt status={status} msg={AppTelemetry.MaskUserId(incoming.Id)} to={AppTelemetry.MaskUserId(senderContact.UserId)}");
@@ -2612,8 +2795,10 @@ public partial class MainWindow : Window {
 
     void BtnAddContact_Click(object s, RoutedEventArgs e) {
         AddOverlay.Visibility = Visibility.Visible;
+        InviteOverlay.Visibility = Visibility.Collapsed;
         AddContactId.Clear();
         AddContactName.Clear();
+        ResetAddContactSuggestion();
         AddStatus.Visibility = Visibility.Collapsed;
         AddStatusPanel.Visibility = Visibility.Collapsed;
         ShowAddDmTab();
@@ -2621,31 +2806,28 @@ public partial class MainWindow : Window {
 
     void BtnQuickNewGroup_Click(object s, RoutedEventArgs e) {
         AddOverlay.Visibility = Visibility.Visible;
+        InviteOverlay.Visibility = Visibility.Collapsed;
         AddStatus.Visibility = Visibility.Collapsed;
         AddStatusPanel.Visibility = Visibility.Collapsed;
-        _groupInviteMode = false;
         ShowAddGroupTab();
     }
 
     void BtnGroupInvite_Click(object s, RoutedEventArgs e) {
-        if (_activeConv?.GroupData == null) {
+        if (_activeConv?.GroupData is not GroupInfo group) {
             SetSidebarStatus("open a group first");
+            return;
+        }
+        if (!IsCurrentUserGroupOwner(group)) {
+            SetSidebarStatus("only the group owner can invite members");
             return;
         }
 
         GroupMenuPopup.IsOpen = false;
-        AddOverlay.Visibility = Visibility.Visible;
-        AddStatus.Visibility = Visibility.Collapsed;
-        AddStatusPanel.Visibility = Visibility.Collapsed;
-        _groupInviteMode = true;
-        ShowAddGroupTab();
+        OpenInviteOverlay(group);
     }
 
     void TabAddDm_Click(object s, RoutedEventArgs e) => ShowAddDmTab();
-    void TabAddGroup_Click(object s, RoutedEventArgs e) {
-        _groupInviteMode = false;
-        ShowAddGroupTab();
-    }
+    void TabAddGroup_Click(object s, RoutedEventArgs e) => ShowAddGroupTab();
 
     void ShowAddDmTab() {
         AddDmForm.Visibility = Visibility.Visible;
@@ -2658,7 +2840,6 @@ public partial class MainWindow : Window {
         TabAddGroup.BorderBrush = (Brush)FindResource("Border");
         AddStatus.Visibility = Visibility.Collapsed;
         AddStatusPanel.Visibility = Visibility.Collapsed;
-        _groupInviteMode = false;
     }
 
     void ShowAddGroupTab() {
@@ -2674,43 +2855,87 @@ public partial class MainWindow : Window {
         AddStatusPanel.Visibility = Visibility.Collapsed;
 
         GroupMemberIds.Clear();
-        if (_groupInviteMode && _activeConv?.IsGroup == true && _activeConv.GroupData != null) {
-            _groupInviteMode = true;
-            GroupModeHint.Text = $"Invite members to {_activeConv.GroupData.Name}.";
-            NewGroupName.Text = _activeConv.GroupData.Name;
-            NewGroupName.IsEnabled = false;
-            BtnConfirmCreateGroup.Content = "Invite members";
-            return;
-        }
-
-        _groupInviteMode = false;
         GroupModeHint.Text = "Create a solo group now and invite people later.";
         NewGroupName.IsEnabled = true;
         NewGroupName.Clear();
         BtnConfirmCreateGroup.Content = "Create group";
     }
 
-    void BtnCloseOverlay_Click(object s, RoutedEventArgs e) =>
+    void BtnCloseOverlay_Click(object s, RoutedEventArgs e) {
+        ResetAddContactSuggestion();
         AddOverlay.Visibility = Visibility.Collapsed;
+        InviteOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    async void AddContactId_TextChanged(object s, TextChangedEventArgs e) {
+        if (AddOverlay.Visibility != Visibility.Visible || AddDmForm.Visibility != Visibility.Visible) {
+            return;
+        }
+
+        var uid = AddContactId.Text.Trim();
+        var previousSuggestedName = _lastSuggestedAddContactName;
+        ResetAddContactSuggestion(clearText: false);
+
+        var currentName = AddContactName.Text.Trim();
+        if (string.IsNullOrWhiteSpace(currentName) ||
+            string.Equals(currentName, previousSuggestedName, StringComparison.Ordinal)) {
+            SetAddContactNameText("");
+        }
+
+        if (!_net.IsConnected || !IsValidUserId(uid) || string.Equals(uid, _user?.UserId, StringComparison.Ordinal)) {
+            return;
+        }
+
+        var lookupCts = new CancellationTokenSource();
+        _addContactLookupCts = lookupCts;
+        _lastSuggestedAddContactId = uid;
+
+        try {
+            await Task.Delay(350, lookupCts.Token);
+            var profile = await _net.GetUserProfileAsync(uid);
+            if (lookupCts.Token.IsCancellationRequested ||
+                !string.Equals(AddContactId.Text.Trim(), uid, StringComparison.Ordinal) ||
+                profile == null ||
+                string.IsNullOrWhiteSpace(profile.Value.DisplayName)) {
+                return;
+            }
+
+            currentName = AddContactName.Text.Trim();
+            if (string.IsNullOrWhiteSpace(currentName) ||
+                string.Equals(currentName, previousSuggestedName, StringComparison.Ordinal)) {
+                _lastSuggestedAddContactName = profile.Value.DisplayName!;
+                SetAddContactNameText(_lastSuggestedAddContactName);
+            }
+        } catch (OperationCanceledException) {
+        }
+    }
+
+    void AddContactName_TextChanged(object s, TextChangedEventArgs e) {
+        if (_suppressAddContactNameEvents) {
+            return;
+        }
+
+        if (!string.Equals(AddContactId.Text.Trim(), _lastSuggestedAddContactId, StringComparison.Ordinal)) {
+            _lastSuggestedAddContactName = "";
+        }
+    }
 
     void BtnConfirmAdd_Click(object s, RoutedEventArgs e) =>
         RunUiTask(AddContactAsync, "add contact", showSidebarErrors: false, onError: message => ShowAddStatus(message));
 
     async Task AddContactAsync() {
         var uid = AddContactId.Text.Trim();
-        var name = AddContactName.Text.Trim();
 
         if (string.IsNullOrEmpty(uid)) { ShowAddStatus("enter a user id"); return; }
         if (!IsValidUserId(uid)) { ShowAddStatus("enter a valid user id"); return; }
-        if (string.IsNullOrEmpty(name)) { ShowAddStatus("enter a display name"); return; }
         if (uid == _user!.UserId) { ShowAddStatus("that's your own id"); return; }
         if (_vault.LoadContacts().Any(c => c.UserId == uid)) { ShowAddStatus("already in contacts"); return; }
 
-        ShowAddStatus("fetching public keys from relay...");
+        ShowAddStatus("fetching public profile from relay...");
 
-        // Fetch keys from relay
-        var keys = await _net.GetUserKeysAsync(uid);
-        if (keys == null) {
+        var profile = await _net.GetUserProfileAsync(uid);
+        var name = NormalizeContactDisplayName(uid, AddContactName.Text, profile?.DisplayName);
+        if (profile == null) {
             // Add anyway with placeholder keys (they'll connect later)
             ShowAddStatus("user not online — added offline, keys will sync when they connect", false);
         }
@@ -2718,8 +2943,8 @@ public partial class MainWindow : Window {
         var contact = new Contact {
             UserId = uid,
             DisplayName = name,
-            SignPubKey = keys?.signPub ?? [],
-            DhPubKey = keys?.dhPub ?? [],
+            SignPubKey = profile?.SignPubKey ?? [],
+            DhPubKey = profile?.DhPubKey ?? [],
             ConversationId = $"dm:{_user.UserId}:{uid}",
             AddedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
@@ -2744,9 +2969,26 @@ public partial class MainWindow : Window {
         ConvList.SelectedItem = conv;
     }
 
+    void ResetAddContactSuggestion(bool clearText = true) {
+        _addContactLookupCts?.Cancel();
+        _addContactLookupCts = null;
+        _lastSuggestedAddContactId = "";
+        _lastSuggestedAddContactName = "";
+
+        if (clearText) {
+            SetAddContactNameText("");
+        }
+    }
+
+    void SetAddContactNameText(string value) {
+        _suppressAddContactNameEvents = true;
+        AddContactName.Text = value;
+        _suppressAddContactNameEvents = false;
+    }
+
     void BtnCreateGroup_Click(object s, RoutedEventArgs e) =>
-        RunUiTask(_groupInviteMode ? InviteMembersToActiveGroupAsync : CreateGroupAsync,
-            _groupInviteMode ? "invite group members" : "create group",
+        RunUiTask(CreateGroupAsync,
+            "create group",
             showSidebarErrors: false,
             onError: message => ShowAddStatus(message));
 
@@ -2797,44 +3039,144 @@ public partial class MainWindow : Window {
         }
     }
 
-    async Task InviteMembersToActiveGroupAsync() {
+    void OpenInviteOverlay(GroupInfo group) {
+        AddOverlay.Visibility = Visibility.Collapsed;
+        InviteOverlay.Visibility = Visibility.Visible;
+        InviteOverlayTitle.Text = $"Invite friends to {group.Name}";
+        InviteOverlaySubtitle.Text = "Choose saved friends to invite. Existing group members stay visible so you can see who is already inside.";
+        InviteSearchBox.Clear();
+        HideInviteStatus();
+        LoadInviteContacts(group);
+        UpdateInviteOverlayState();
+    }
+
+    void LoadInviteContacts(GroupInfo group) {
+        foreach (var old in _inviteContactSource) {
+            old.PropertyChanged -= InviteContactOption_PropertyChanged;
+        }
+
+        var contacts = _vault.LoadContacts()
+            .OrderBy(contact => contact.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(contact => contact.UserId, StringComparer.Ordinal)
+            .ToList();
+
+        _inviteContactSource = contacts
+            .Select(contact => {
+                var option = new InviteContactOptionViewModel {
+                    Contact = contact,
+                    IsAlreadyMember = group.MemberIds.Contains(contact.UserId),
+                    GroupName = group.Name
+                };
+                option.PropertyChanged += InviteContactOption_PropertyChanged;
+                return option;
+            })
+            .ToList();
+
+        ApplyInviteContactFilter();
+    }
+
+    void InviteContactOption_PropertyChanged(object? sender, PropertyChangedEventArgs e) {
+        if (e.PropertyName == nameof(InviteContactOptionViewModel.IsSelected)) {
+            UpdateInviteOverlayState();
+        }
+    }
+
+    void InviteSearchBox_TextChanged(object s, TextChangedEventArgs e) =>
+        ApplyInviteContactFilter();
+
+    void ApplyInviteContactFilter() {
+        var query = InviteSearchBox?.Text.Trim() ?? "";
+        var filtered = _inviteContactSource
+            .Where(option => InviteContactMatchesQuery(option, query))
+            .OrderBy(option => option.IsAlreadyMember)
+            .ThenBy(option => option.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _inviteContacts.Clear();
+        foreach (var option in filtered) {
+            _inviteContacts.Add(option);
+        }
+
+        UpdateInviteOverlayState();
+    }
+
+    void UpdateInviteOverlayState() {
+        if (InviteEmptyHint == null || BtnConfirmInviteMembers == null) return;
+
+        if (_inviteContacts.Count == 0) {
+            InviteEmptyHint.Visibility = Visibility.Visible;
+            InviteEmptyHint.Text = _inviteContactSource.Count == 0
+                ? "No saved friends yet. Add friends first, then come back here to invite them."
+                : "No saved friends match this search.";
+        } else {
+            InviteEmptyHint.Visibility = Visibility.Collapsed;
+        }
+
+        BtnConfirmInviteMembers.IsEnabled = _inviteContacts.Any(option => option.IsSelected && option.CanInvite);
+    }
+
+    void ShowInviteStatus(string message, bool isError = true) {
+        InviteStatus.Text = message;
+        InviteStatus.Foreground = isError ? (Brush)FindResource("Red") : (Brush)FindResource("Dim");
+        InviteStatus.Visibility = Visibility.Visible;
+        InviteStatusPanel.Visibility = Visibility.Visible;
+    }
+
+    internal static string NormalizeContactDisplayName(string userId, string? preferredName, string? publicDisplayName = null) {
+        var trimmed = preferredName?.Trim() ?? "";
+        if (!string.IsNullOrWhiteSpace(trimmed)) {
+            return trimmed;
+        }
+
+        var publicTrimmed = publicDisplayName?.Trim() ?? "";
+        return string.IsNullOrWhiteSpace(publicTrimmed) ? ShortUserId(userId) : publicTrimmed;
+    }
+
+    internal static bool InviteContactMatchesQuery(InviteContactOptionViewModel option, string? query) {
+        var trimmed = query?.Trim() ?? "";
+        return string.IsNullOrWhiteSpace(trimmed) ||
+               option.DisplayName.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ||
+               option.UserId.Contains(trimmed, StringComparison.OrdinalIgnoreCase);
+    }
+
+    void HideInviteStatus() {
+        InviteStatus.Visibility = Visibility.Collapsed;
+        InviteStatusPanel.Visibility = Visibility.Collapsed;
+    }
+
+    void BtnConfirmInviteMembers_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(InviteSelectedMembersToActiveGroupAsync,
+            "invite group members",
+            showSidebarErrors: false,
+            onError: message => ShowInviteStatus(message));
+
+    async Task InviteSelectedMembersToActiveGroupAsync() {
         if (_activeConv?.GroupData is not GroupInfo group || _user == null) {
-            ShowAddStatus("open a group first");
+            ShowInviteStatus("open a group first");
             return;
         }
         if (!IsCurrentUserGroupOwner(group)) {
-            ShowAddStatus("only the group owner can invite members");
+            ShowInviteStatus("only the group owner can invite members");
             return;
         }
 
-        var memberLines = GroupMemberIds.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        var requested = memberLines.Select(m => m.Trim())
-                                   .Where(m => !string.IsNullOrEmpty(m) && m != _user.UserId)
-                                   .Distinct()
-                                   .ToList();
-        if (requested.Count == 0) {
-            ShowAddStatus("enter at least one member user id");
+        var newMembers = _inviteContactSource
+            .Where(option => option.IsSelected && option.CanInvite)
+            .Select(option => option.UserId)
+            .Distinct()
+            .ToList();
+
+        if (newMembers.Count == 0) {
+            ShowInviteStatus("choose at least one saved friend");
             return;
         }
 
         var contactsById = _vault.LoadContacts().ToDictionary(c => c.UserId);
-        var missingContacts = requested.Where(id => !contactsById.ContainsKey(id)).Distinct().ToList();
-        if (missingContacts.Count > 0) {
-            ShowAddStatus("add those users as direct contacts first");
-            return;
-        }
-
-        var newMembers = requested.Where(id => !group.MemberIds.Contains(id)).Distinct().ToList();
-        if (newMembers.Count == 0) {
-            ShowAddStatus("all listed users are already in this group", false);
-            return;
-        }
-
         group.MemberIds = group.MemberIds.Concat(newMembers).Distinct().ToList();
         _vault.SaveGroup(group);
         await SendGroupInvitesAsync(group, contactsById, newMembers);
 
-        AddOverlay.Visibility = Visibility.Collapsed;
+        InviteOverlay.Visibility = Visibility.Collapsed;
         SetSidebarStatus($"invited {newMembers.Count} member(s) to {group.Name}");
     }
 
@@ -2916,8 +3258,15 @@ public partial class MainWindow : Window {
 
         var conv = _convs.FirstOrDefault(c => c.GroupData?.GroupId == groupId);
         if (conv != null) {
+            if (conv.GroupData?.GroupKey is { Length: > 0 } groupKey) {
+                Crypto.Wipe(groupKey);
+                conv.GroupData.GroupKey = [];
+            }
             _convs.Remove(conv);
         }
+
+        _seqTracker.Remove(groupId);
+        _seqTrackerTouched.Remove(groupId);
 
         if (string.Equals(_activeConvId, groupId, StringComparison.Ordinal)) {
             _activeConv = null;
@@ -2989,11 +3338,15 @@ public partial class MainWindow : Window {
     void BtnMyId_Click(object s, RoutedEventArgs e) {
         if (_user == null) return;
         Clipboard.SetText(_user.UserId);
-        var prev = BtnMyId.Content;
+        _myIdResetTimer?.Stop();
+        var prev = _myIdOriginalContent ??= BtnMyId.Content;
         BtnMyId.Content = "Copied";
-        var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        t.Tick += (_, _) => { BtnMyId.Content = prev; t.Stop(); };
-        t.Start();
+        _myIdResetTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _myIdResetTimer.Tick += (_, _) => {
+            BtnMyId.Content = prev;
+            _myIdResetTimer?.Stop();
+        };
+        _myIdResetTimer.Start();
     }
 
     void BtnSecurityReview_Click(object s, RoutedEventArgs e) =>
@@ -3179,6 +3532,7 @@ public partial class MainWindow : Window {
     protected override void OnClosed(EventArgs e) {
         _uiLifetimeCts.Cancel();
         _outboxTimer?.Stop();
+        _myIdResetTimer?.Stop();
         if (_notifyIcon != null) {
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
@@ -3190,6 +3544,12 @@ public partial class MainWindow : Window {
             AppLog.Warn("shutdown", $"network cleanup failed: {ex.Message}");
         }
         foreach (var key in _convKeys.Values) Crypto.Wipe(key);
+        foreach (var groupKey in _convs.Select(conv => conv.GroupData?.GroupKey).Where(key => key is { Length: > 0 })) {
+            Crypto.Wipe(groupKey!);
+        }
+        foreach (var option in _inviteContactSource) {
+            option.PropertyChanged -= InviteContactOption_PropertyChanged;
+        }
         _vault.Dispose();
         AppLog.Info("shutdown", "window closed");
         base.OnClosed(e);

@@ -30,6 +30,7 @@ public class PersistenceTests {
         Assert.Equal(contact.DisplayName, contacts[0].DisplayName);
         Assert.Equal(contact.ConversationId, contacts[0].ConversationId);
         Assert.True(contacts[0].IsVerified);
+        Assert.Equal(contact.LastSeen, contacts[0].LastSeen);
         Assert.Equal(Convert.ToBase64String(contact.PendingSignPubKey), Convert.ToBase64String(contacts[0].PendingSignPubKey));
         Assert.Equal(Convert.ToBase64String(contact.PendingDhPubKey), Convert.ToBase64String(contacts[0].PendingDhPubKey));
         Assert.Equal(contact.KeyChangedAt, contacts[0].KeyChangedAt);
@@ -38,7 +39,29 @@ public class PersistenceTests {
         Assert.Equal(group.GroupId, groups[0].GroupId);
         Assert.Equal(group.Name, groups[0].Name);
         Assert.Equal(group.MemberIds, groups[0].MemberIds);
+        Assert.Equal(group.OwnerId, groups[0].OwnerId);
         Assert.Equal(Convert.ToBase64String(group.GroupKey), Convert.ToBase64String(groups[0].GroupKey));
+    }
+
+    [Fact]
+    public void SavingAnExistingContactPreservesLastSeen() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+        var contact = CreateContact();
+
+        using var vault = new Vault();
+        vault.Open(vaultPath, key);
+        vault.SaveContact(contact);
+        vault.UpdateContactSeen(contact.UserId);
+
+        var saved = vault.LoadContacts().Single();
+        var seenAt = saved.LastSeen;
+        saved.DisplayName = "Renamed";
+        vault.SaveContact(saved);
+
+        var reloaded = vault.LoadContacts().Single();
+        Assert.Equal(seenAt, reloaded.LastSeen);
     }
 
     [Fact]
@@ -137,7 +160,8 @@ public class PersistenceTests {
             IsVerified = true,
             KeyChangedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ConversationId = "dm:alice:bob",
-            AddedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            AddedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            LastSeen = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
     }
 
@@ -146,6 +170,7 @@ public class PersistenceTests {
         Name = "Friends",
         MemberIds = new List<string> { "me", memberId },
         GroupKey = RandomNumberGenerator.GetBytes(32),
+        OwnerId = "me",
         CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
     };
 

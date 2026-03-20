@@ -13,7 +13,7 @@ public sealed class VaultRecoveryException : Exception {
 }
 
 public partial class Vault {
-    const int CurrentSchemaVersion = 4;
+    const int CurrentSchemaVersion = 5;
     readonly List<string> _maintenanceActions = [];
 
     public string? LastMaintenanceBackupPath { get; private set; }
@@ -58,6 +58,10 @@ public partial class Vault {
             }
             if (version < 4) {
                 MigrateOutboxStorage();
+            }
+            if (version < 5) {
+                TryExec("ALTER TABLE groups ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''");
+                MigrateGroupMetadataStorage();
             }
             SetSetting("schema_version", CurrentSchemaVersion.ToString());
             _maintenanceActions.Add($"migrated schema v{version} -> v{CurrentSchemaVersion}");
@@ -203,6 +207,48 @@ public partial class Vault {
         if (skipped > 0) {
             _maintenanceActions.Add($"removed {skipped} invalid legacy outbox item(s)");
         }
+    }
+
+    void MigrateGroupMetadataStorage() {
+        TryExec("ALTER TABLE groups ADD COLUMN member_ids_enc BLOB");
+        TryExec("ALTER TABLE groups ADD COLUMN owner_id_enc BLOB");
+
+        var rows = new List<(string GroupId, string MemberIds, string OwnerId)>();
+        using (var select = _db!.CreateCommand()) {
+            select.CommandText = """
+                SELECT group_id, member_ids, owner_id
+                FROM groups
+                WHERE COALESCE(member_ids, '') <> ''
+                   OR COALESCE(owner_id, '') <> ''
+                """;
+            using var reader = select.ExecuteReader();
+            while (reader.Read()) {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? "" : reader.GetString(1),
+                    reader.IsDBNull(2) ? "" : reader.GetString(2)));
+            }
+        }
+
+        if (rows.Count == 0) {
+            return;
+        }
+
+        using var tx = _db!.BeginTransaction(deferred: false);
+        foreach (var row in rows) {
+            ExecParamTx(tx, """
+                UPDATE groups
+                SET member_ids = '',
+                    member_ids_enc = @memberIdsEnc,
+                    owner_id = '',
+                    owner_id_enc = @ownerIdEnc
+                WHERE group_id = @groupId
+                """,
+                ("groupId", row.GroupId),
+                ("memberIdsEnc", string.IsNullOrWhiteSpace(row.MemberIds) ? DBNull.Value : Crypto.EncryptStr(_key, row.MemberIds)),
+                ("ownerIdEnc", string.IsNullOrWhiteSpace(row.OwnerId) ? DBNull.Value : Crypto.EncryptStr(_key, row.OwnerId)));
+        }
+        tx.Commit();
     }
 
     bool HasColumn(string tableName, string columnName) {
@@ -383,7 +429,7 @@ public partial class Vault {
             )");
         if (missingConvStateRows > 0) {
             actions.Add(tx => {
-                var inserted = ExecuteScalarIntTx(tx, @"
+                var inserted = ExecuteNonQueryTx(tx, @"
                 INSERT OR IGNORE INTO conv_state(conversation_id, last_seq, secret_enc)
                 SELECT conversation_id, MAX(seq_num), NULL
                 FROM messages
@@ -427,7 +473,7 @@ public partial class Vault {
         }
     }
 
-    int ExecuteScalarIntTx(SqliteTransaction tx, string sql) {
+    int ExecuteNonQueryTx(SqliteTransaction tx, string sql) {
         using var cmd = _db!.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText = sql;

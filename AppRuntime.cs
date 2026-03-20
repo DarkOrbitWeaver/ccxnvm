@@ -21,6 +21,7 @@ public sealed record AppLaunchOptions(
 );
 
 public static class AppRuntime {
+    public const string TestRegisterPasswordEnvVar = "CIPHER_TEST_REGISTER_PASSWORD";
     static readonly object SignalGate = new();
 
     public static AppLaunchOptions Current { get; private set; } = new();
@@ -43,7 +44,7 @@ public static class AppRuntime {
         string? faultProfile = null;
         var startupDelayMs = 0;
         string? testRegisterName = null;
-        string? testRegisterPassword = null;
+        var testRegisterPassword = Environment.GetEnvironmentVariable(TestRegisterPasswordEnvVar);
         var autoRegister = false;
         var autoLogin = false;
 

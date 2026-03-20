@@ -236,6 +236,7 @@ sealed class UiAppSession : IAsyncDisposable {
     public static async Task<UiAppSession> LaunchAsync(string appDataDir, string relayUrl, params string[] extraArgs) {
         var signalFile = Path.Combine(appDataDir, "ui-signals.log");
         Directory.CreateDirectory(appDataDir);
+        string? testRegisterPassword = null;
 
         var args = new List<string> {
             "--test-mode",
@@ -244,12 +245,22 @@ sealed class UiAppSession : IAsyncDisposable {
             $"--signal-file=\"{signalFile}\"",
             "--disable-updater"
         };
-        args.AddRange(extraArgs);
+        foreach (var arg in extraArgs) {
+            if (arg.StartsWith("--test-register-password=", StringComparison.Ordinal)) {
+                testRegisterPassword = arg["--test-register-password=".Length..];
+                continue;
+            }
+
+            args.Add(arg);
+        }
 
         var startInfo = new ProcessStartInfo(UiTestPaths.ClientExePath, string.Join(" ", args)) {
             WorkingDirectory = UiTestPaths.RepoRoot,
             UseShellExecute = false
         };
+        if (!string.IsNullOrEmpty(testRegisterPassword)) {
+            startInfo.Environment[AppRuntime.TestRegisterPasswordEnvVar] = testRegisterPassword;
+        }
 
         var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start Cipher");
         var window = await WaitForWindowAsync(process);
