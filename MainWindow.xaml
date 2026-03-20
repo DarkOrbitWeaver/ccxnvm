@@ -211,7 +211,7 @@
                                 <TextBlock Text="Direct contacts and groups" FontSize="11" Foreground="{StaticResource Muted}" />
                             </StackPanel>
                             <WrapPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
-                                <Button Content="Add Friend" Padding="10,6" FontSize="11" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" ToolTip="Add direct contact" />
+                                <Button x:Name="BtnSidebarAddFriend" Content="Add Friend" Padding="10,6" FontSize="11" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" ToolTip="Add direct contact" />
                                 <Button x:Name="BtnQuickNewGroup" Content="New Group" Padding="10,6" FontSize="11" Margin="8,0,0,0" Style="{StaticResource GroupBtn}" Click="BtnQuickNewGroup_Click" ToolTip="Create a new group" />
                                 <Button x:Name="BtnSideGroupInvite" Content="Invite" Padding="10,6" FontSize="11" Margin="8,0,0,0" Style="{StaticResource InfoBtn}" Click="BtnGroupInvite_Click" ToolTip="Invite members to selected group" Visibility="Collapsed" />
                             </WrapPanel>
@@ -292,7 +292,7 @@
                                 </ListBox.ItemContainerStyle>
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="0,4">
+                                        <Grid Margin="0,5">
                                             <Border x:Name="MessageBubble"
                                                     Padding="12,10"
                                                     CornerRadius="14"
@@ -308,6 +308,13 @@
                                                         <RowDefinition Height="Auto" />
                                                     </Grid.RowDefinitions>
                                                     <DockPanel Grid.Row="0" LastChildFill="False">
+                                                        <TextBlock Text="{Binding BulletChar}"
+                                                                   Foreground="{Binding BulletBrush}"
+                                                                   FontFamily="{StaticResource Mono}"
+                                                                   FontSize="11"
+                                                                   Margin="0,0,8,0"
+                                                                   DockPanel.Dock="Left"
+                                                                   VerticalAlignment="Center" />
                                                         <TextBlock Text="{Binding SenderLabel}"
                                                                    Foreground="{Binding NameBrush}"
                                                                    FontSize="12"
@@ -363,11 +370,6 @@
                                                 </Grid>
                                             </Border>
                                         </Grid>
-                                        <DataTemplate.Triggers>
-                                            <DataTrigger Binding="{Binding IsMine}" Value="True">
-                                                <Setter TargetName="MessageBubble" Property="HorizontalAlignment" Value="Right" />
-                                            </DataTrigger>
-                                        </DataTemplate.Triggers>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>
                             </ListBox>
@@ -468,7 +470,7 @@
                     <TextBlock x:Name="SettingsUpdateStatusText" Margin="0,4,0,8" Foreground="{StaticResource White}" FontSize="12" TextWrapping="Wrap" />
                     <ProgressBar x:Name="UpdateProgressBar" Height="8" Minimum="0" Maximum="100" Margin="0,0,0,14" Visibility="Collapsed" />
                     <TextBlock Text="Diagnostics" Foreground="{StaticResource Muted}" FontSize="12" />
-                    <TextBlock x:Name="SettingsDiagText" Margin="0,4,0,18" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" />
+                    <TextBlock x:Name="SettingsDiagnosticsText" Margin="0,4,0,18" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" />
                     <UniformGrid Columns="2" Margin="0,0,0,14">
                         <Button x:Name="BtnCheckUpdates" Content="Check updates" Style="{StaticResource InfoBtn}" Margin="0,0,10,10" Click="BtnCheckUpdates_Click" />
                         <Button x:Name="BtnRestartToUpdate" Content="Restart to update" Style="{StaticResource GroupBtn}" Margin="0,0,0,10" Click="BtnRestartToUpdate_Click" Visibility="Collapsed" />

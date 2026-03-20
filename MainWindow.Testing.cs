@@ -40,6 +40,7 @@ public partial class MainWindow {
         SetAutomationId(BtnSecurityReview, "BtnSecurityReview");
         SetAutomationId(BtnMyId, "BtnMyId");
         SetAutomationId(BtnOpenAddOverlay, "BtnOpenAddOverlay");
+        SetAutomationId(BtnSidebarAddFriend, "BtnSidebarAddFriend");
         SetAutomationId(BtnGroupInvite, "BtnGroupInvite");
         SetAutomationId(BtnQuickNewGroup, "BtnQuickNewGroup");
         SetAutomationId(BtnOpenNukeOverlay, "BtnOpenNukeOverlay");
@@ -77,7 +78,7 @@ public partial class MainWindow {
         SetAutomationId(SettingsVersionText, "SettingsVersionText");
         SetAutomationId(SettingsUpdateStatusText, "SettingsUpdateStatusText");
         SetAutomationId(UpdateProgressBar, "UpdateProgressBar");
-        SetAutomationId(SettingsDiagText, "SettingsDiagnosticsText");
+        SetAutomationId(SettingsDiagnosticsText, "SettingsDiagnosticsText");
         SetAutomationId(BtnCheckUpdates, "BtnCheckUpdates");
         SetAutomationId(BtnRestartToUpdate, "BtnRestartToUpdate");
         SetAutomationId(BtnOpenLogs, "BtnOpenLogs");

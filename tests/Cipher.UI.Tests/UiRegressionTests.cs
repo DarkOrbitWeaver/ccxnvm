@@ -116,7 +116,7 @@ public class UiRegressionTests {
         await app.WaitForTextAsync("SettingsDiagnosticsText", text => text.Contains("data:", StringComparison.OrdinalIgnoreCase), TimeSpan.FromSeconds(10));
     }
     static void AddDirectContact(UiAppSession app, string userId, string displayName) {
-        app.Click("BtnOpenAddOverlay");
+        app.Click("BtnSidebarAddFriend");
         app.SetText("AddContactId", userId);
         app.SetText("AddContactName", displayName);
         app.Click("BtnConfirmAddContact");

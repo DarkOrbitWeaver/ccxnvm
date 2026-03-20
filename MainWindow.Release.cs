@@ -67,7 +67,7 @@ public partial class MainWindow {
             notes.Add($"latest backup: {_vault.LastMaintenanceBackupPath}");
         }
 
-        SettingsDiagText.Text = string.Join(Environment.NewLine, notes);
+        SettingsDiagnosticsText.Text = string.Join(Environment.NewLine, notes);
     }
 
     void ReportVaultMaintenance() {
