@@ -1,9 +1,31 @@
 using System.Windows;
+using System.Windows.Media;
 using Application = System.Windows.Application;
+using Color = System.Windows.Media.Color;
 
 namespace Cipher;
 
 public static class UiThemeManager {
+    static readonly (string ColorKey, string BrushKey)[] ThemeBrushMappings = [
+        ("GreenColor", "Green"),
+        ("DimGreenColor", "DimGreen"),
+        ("TealAccentColor", "TealAccent"),
+        ("GlassBorderColor", "GlassBorder"),
+        ("BubbleBorderMineColor", "BubbleBorderMine"),
+        ("BubbleBorderTheirsColor", "BubbleBorderTheirs"),
+        ("AccentButtonFillColor", "AccentButtonFill"),
+        ("AccentButtonHoverFillColor", "AccentButtonHoverFill"),
+        ("AccentButtonBorderColor", "AccentButtonBorder"),
+        ("AccentButtonHoverBorderColor", "AccentButtonHoverBorder"),
+        ("ConversationSelectedColor", "ConversationSelected"),
+        ("GlassPanelColor", "GlassPanel"),
+        ("GlassOverlayColor", "GlassOverlay"),
+        ("GlassInputBgColor", "GlassInputBg"),
+        ("GlassInputFocusBgColor", "GlassInputFocusBg"),
+        ("BubbleMineColor", "BubbleMine"),
+        ("BubbleTheirsColor", "BubbleTheirs")
+    ];
+
     public static bool TryApplyTheme(string themeFile) {
         if (Application.Current?.Resources is not ResourceDictionary resources)
             return false;
@@ -25,10 +47,64 @@ public static class UiThemeManager {
             else
                 merged.Add(next);
 
+            ApplyLivePalette(resources, next);
+            RefreshOpenWindows();
             return true;
         } catch (Exception ex) {
             AppLog.Warn("theme", $"failed to apply {themeFile}: {ex.Message}");
             return false;
+        }
+    }
+
+    static void ApplyLivePalette(ResourceDictionary targetResources, ResourceDictionary themeResources) {
+        foreach (var (colorKey, brushKey) in ThemeBrushMappings) {
+            if (!TryGetColor(themeResources, colorKey, out var color)) continue;
+
+            targetResources[colorKey] = color;
+
+            if (targetResources.Contains(brushKey) &&
+                targetResources[brushKey] is SolidColorBrush brush &&
+                !brush.IsFrozen) {
+                brush.Color = color;
+            }
+        }
+
+        if (targetResources.Contains("AppBackgroundBrush") &&
+            targetResources["AppBackgroundBrush"] is LinearGradientBrush background &&
+            !background.IsFrozen &&
+            background.GradientStops.Count >= 3) {
+            if (TryGetColor(themeResources, "AppBackgroundStartColor", out var startColor)) {
+                targetResources["AppBackgroundStartColor"] = startColor;
+                background.GradientStops[0].Color = startColor;
+            }
+
+            if (TryGetColor(themeResources, "AppBackgroundMidColor", out var midColor)) {
+                targetResources["AppBackgroundMidColor"] = midColor;
+                background.GradientStops[1].Color = midColor;
+            }
+
+            if (TryGetColor(themeResources, "AppBackgroundEndColor", out var endColor)) {
+                targetResources["AppBackgroundEndColor"] = endColor;
+                background.GradientStops[2].Color = endColor;
+            }
+        }
+    }
+
+    static bool TryGetColor(ResourceDictionary resources, string key, out Color color) {
+        if (resources.Contains(key) && resources[key] is Color resourceColor) {
+            color = resourceColor;
+            return true;
+        }
+
+        color = default;
+        return false;
+    }
+
+    static void RefreshOpenWindows() {
+        if (Application.Current == null) return;
+
+        foreach (Window window in Application.Current.Windows) {
+            window.InvalidateVisual();
         }
     }
 }

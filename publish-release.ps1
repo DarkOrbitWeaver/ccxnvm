@@ -1,7 +1,8 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Channel = "stable",
-    [string]$Version
+    [string]$Version,
+    [switch]$IncludePortable
 )
 
 $projectPath = ".\CipherClient.csproj"
@@ -38,6 +39,9 @@ if ([string]::IsNullOrWhiteSpace($velopackVersion)) {
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+
+Get-ChildItem $publishDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-ChildItem $releaseDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
 
 dotnet publish $projectPath `
   -c Release `
@@ -92,6 +96,10 @@ $packArgs = @(
     "--delta", "BestSize"
 )
 
+if (-not $IncludePortable) {
+    $packArgs += "--noPortable"
+}
+
 if (Test-Path ".\Assets\256x256.ico") {
     $packArgs += @("--icon", ".\Assets\256x256.ico")
 }
@@ -103,4 +111,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Release artifacts created in $releaseDir"
-Write-Host "Upload the generated installer, releases.$Channel.json, and packages from $releaseDir to a GitHub Release."
+if ($IncludePortable) {
+    Write-Host "Portable zip included because -IncludePortable was set."
+} else {
+    Write-Host "Portable zip skipped. Use -IncludePortable if you want a separate portable download."
+}
+Write-Host "Upload the setup exe, full .nupkg, and metadata files from $releaseDir to a GitHub Release."
