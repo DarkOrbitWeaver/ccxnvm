@@ -316,12 +316,6 @@ public partial class MainWindow : Window {
             }
 
             stack.Children.Add(image);
-            stack.Children.Add(new TextBlock {
-                Text = entry.Emoji,
-                FontSize = 13,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Foreground = (Brush)FindResource("White")
-            });
 
             button.Content = stack;
             button.Click += BtnEmojiSymbol_Click;

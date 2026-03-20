@@ -4,6 +4,7 @@ namespace Cipher;
 
 public static class AppBranding {
     static readonly Assembly Assembly = typeof(AppBranding).Assembly;
+    public const string DisplayTitle = "ZLABO";
 
     public const string DefaultRelayUrl = "https://cipher-relay.onrender.com";
     public const string GitHubRepoUrl = "https://github.com/DarkOrbitWeaver/ccxnvm";
@@ -19,7 +20,7 @@ public static class AppBranding {
     public static string CompanyName =>
         Assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "DarkOrbitWeaver";
 
-    public static string WindowTitle => ProductName.ToUpperInvariant();
+    public static string WindowTitle => DisplayTitle;
 
     public static string AppDataFolder => ProductName;
 

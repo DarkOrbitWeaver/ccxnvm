@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <AssemblyName>Cipher</AssemblyName>
+    <AssemblyName>Zlabo</AssemblyName>
     <Product>Cipher</Product>
     <Company>DarkOrbitWeaver</Company>
     <Description>Private end-to-end encrypted chat client.</Description>

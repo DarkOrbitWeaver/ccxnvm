@@ -46,7 +46,8 @@
             <GradientStop Color="#0A121E" Offset="1"/>
         </LinearGradientBrush>
 
-        <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI, Segoe UI Emoji</FontFamily>
+        <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI</FontFamily>
+        <FontFamily x:Key="ChatFont">Segoe UI Emoji</FontFamily>
         <FontFamily x:Key="Mono">Cascadia Mono, Consolas</FontFamily>
 
         <Style TargetType="ScrollBar">
