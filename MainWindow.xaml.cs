@@ -6,9 +6,21 @@
 // ═══════════════════════════════════════════════════════════════════════════
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Application = System.Windows.Application;
+using Brush = System.Windows.Media.Brush;
+using Button = System.Windows.Controls.Button;
+using Clipboard = System.Windows.Clipboard;
+using Forms = System.Windows.Forms;
+using FontFamily = System.Windows.Media.FontFamily;
+using HorizontalAlignment = System.Windows.HorizontalAlignment;
+using Image = System.Windows.Controls.Image;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+using MessageBox = System.Windows.MessageBox;
+using Orientation = System.Windows.Controls.Orientation;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -22,36 +34,55 @@ namespace Cipher;
 // ── Brush cache — avoids allocating new brushes on every property access ──────
 static class B {
     static readonly BrushConverter Cvt = new();
+    static readonly Dictionary<string, SolidColorBrush> FallbackCache = [];
     static SolidColorBrush Make(string hex) {
         var b = (SolidColorBrush)Cvt.ConvertFromString(hex)!;
         b.Freeze(); // Frozen = thread-safe + GC-friendly
         return b;
     }
-    public static readonly SolidColorBrush Green      = Make("#6EE7C8");
-    public static readonly SolidColorBrush DimGreen   = Make("#3BAF93");
-    public static readonly SolidColorBrush Amber      = Make("#F6B15F");
-    public static readonly SolidColorBrush AmberDim   = Make("#E09A3C");
-    public static readonly SolidColorBrush AmberText  = Make("#FFD8A6");
-    public static readonly SolidColorBrush TextGreen  = Make("#D8FFF5");
-    public static readonly SolidColorBrush Dim        = Make("#7C8B9F");
-    public static readonly SolidColorBrush DimName    = Make("#B9C6D6");
-    public static readonly SolidColorBrush DimOnline  = Make("#5E6F86");
-    public static readonly SolidColorBrush NameOnline = Make("#EEF5FF");
-    public static readonly SolidColorBrush Red        = Make("#FF6B6B");
-    public static readonly SolidColorBrush Blue       = Make("#7AA2FF");
-    public static readonly SolidColorBrush MineBubble = Make("#2A2444");
-    public static readonly SolidColorBrush PeerBubble = Make("#16333A");
-    public static readonly SolidColorBrush SeenChipBg = Make("#213042");
-    public static readonly SolidColorBrush Transparent = Make("#00000000");
+    static SolidColorBrush Resource(string key, string fallback) {
+        if (Application.Current?.TryFindResource(key) is SolidColorBrush brush) return brush;
+        if (FallbackCache.TryGetValue(key, out var cached)) return cached;
+
+        cached = Make(fallback);
+        FallbackCache[key] = cached;
+        return cached;
+    }
+
+    public static SolidColorBrush Green => Resource("Green", "#6EE7C8");
+    public static SolidColorBrush DimGreen => Resource("DimGreen", "#3BAF93");
+    public static SolidColorBrush Amber => Resource("Amber", "#F6B15F");
+    public static SolidColorBrush AmberDim => Resource("AmberDim", "#E09A3C");
+    public static SolidColorBrush AmberText => Resource("AmberText", "#FFD8A6");
+    public static SolidColorBrush TextGreen => Resource("TextGreen", "#D8FFF5");
+    public static SolidColorBrush MessageText => Resource("MessageText", "#D8E8F4");
+    public static SolidColorBrush Dim => Resource("Dim", "#7C8B9F");
+    public static SolidColorBrush DimName => Resource("DimName", "#B9C6D6");
+    public static SolidColorBrush DimOnline => Resource("DimOnline", "#5E6F86");
+    public static SolidColorBrush NameOnline => Resource("NameOnline", "#EEF5FF");
+    public static SolidColorBrush Red => Resource("Red", "#FF6B6B");
+    public static SolidColorBrush Blue => Resource("Blue", "#7AA2FF");
+    public static SolidColorBrush MineBubble => Resource("BubbleMine", "#B82A2444");
+    public static SolidColorBrush PeerBubble => Resource("BubbleTheirs", "#A016333A");
+    public static SolidColorBrush BubbleBorderMine => Resource("BubbleBorderMine", "#306EE7C8");
+    public static SolidColorBrush BubbleBorderTheirs => Resource("BubbleBorderTheirs", "#2558D7B6");
+    public static SolidColorBrush SeenChipBg => Resource("SeenChipBg", "#213042");
+    public static SolidColorBrush Transparent => Resource("Transparent", "#00000000");
 }
 
 // ── View Models ──────────────────────────────────────────────────────────────
 
 public class ConvViewModel : INotifyPropertyChanged {
+    static readonly FontFamily ConversationIconFont = new("Segoe Fluent Icons, Segoe MDL2 Assets");
+    static readonly FontFamily PresenceFont = new("Segoe UI Symbol, Segoe UI Emoji, Segoe UI");
+
     string _displayName = "";
     bool _isOnline;
     int _unreadCount;
     bool _isGroup;
+    bool _isMuted;
+    string _lastMessagePreview = "No messages yet";
+    long _lastMessageTimestamp;
 
     public string Id { get; set; } = "";
     public string DisplayName {
@@ -64,14 +95,48 @@ public class ConvViewModel : INotifyPropertyChanged {
     }
     public int UnreadCount {
         get => _unreadCount;
-        set { _unreadCount = value; Notify(); Notify(nameof(HasUnread)); }
+        set { _unreadCount = value; Notify(); Notify(nameof(HasUnread)); Notify(nameof(UnreadLabel)); }
     }
-    public bool IsGroup { get => _isGroup; set { _isGroup = value; Notify(); } }
+    public bool IsGroup {
+        get => _isGroup;
+        set {
+            _isGroup = value;
+            Notify();
+            Notify(nameof(ConversationGlyph));
+            Notify(nameof(ConversationGlyphBrush));
+            Notify(nameof(ConversationGlyphFontFamily));
+            Notify(nameof(ConversationGlyphFontSize));
+            Notify(nameof(ShowGroupBadge));
+        }
+    }
+    public bool IsMuted {
+        get => _isMuted;
+        set { _isMuted = value; Notify(); Notify(nameof(ShowMutedBadge)); }
+    }
+    public string LastMessagePreview {
+        get => _lastMessagePreview;
+        set { _lastMessagePreview = value; Notify(); }
+    }
+    public long LastMessageTimestamp {
+        get => _lastMessageTimestamp;
+        set { _lastMessageTimestamp = value; Notify(); Notify(nameof(LastMessageTime)); Notify(nameof(HasLastMessageTime)); }
+    }
 
-    public string StatusChar  => IsGroup ? "◈" : (IsOnline ? "●" : "○");
-    public Brush  StatusBrush => IsOnline ? B.Green : B.DimOnline;
-    public Brush  NameBrush   => IsOnline ? B.NameOnline : B.DimName;
-    public bool   HasUnread   => UnreadCount > 0;
+    public string StatusChar => "●";
+    public Brush StatusBrush => IsOnline ? B.Green : B.DimOnline;
+    public Brush NameBrush => IsOnline ? B.NameOnline : B.DimName;
+    public bool HasUnread => UnreadCount > 0;
+    public string UnreadLabel => UnreadCount > 99 ? "99+" : UnreadCount.ToString(CultureInfo.InvariantCulture);
+    public string ConversationGlyph => IsGroup ? "\uE716" : StatusChar;
+    public Brush ConversationGlyphBrush => IsGroup ? B.Amber : StatusBrush;
+    public FontFamily ConversationGlyphFontFamily => IsGroup ? ConversationIconFont : PresenceFont;
+    public double ConversationGlyphFontSize => IsGroup ? 13 : 10;
+    public bool ShowGroupBadge => IsGroup;
+    public string GroupGlyph => "\uE716";
+    public Brush GroupGlyphBrush => B.Dim;
+    public bool ShowMutedBadge => IsMuted;
+    public bool HasLastMessageTime => LastMessageTimestamp > 0;
+    public string LastMessageTime => LastMessageTimestamp <= 0 ? "" : FormatConversationTimestamp(LastMessageTimestamp);
 
     public Contact?   ContactData { get; set; }
     public GroupInfo? GroupData   { get; set; }
@@ -79,12 +144,23 @@ public class ConvViewModel : INotifyPropertyChanged {
     public event PropertyChangedEventHandler? PropertyChanged;
     void Notify([CallerMemberName] string? p = null) =>
         PropertyChanged?.Invoke(this, new(p));
+
+    static string FormatConversationTimestamp(long timestamp) {
+        var local = DateTimeOffset.FromUnixTimeMilliseconds(timestamp).LocalDateTime;
+        var today = DateTime.Now.Date;
+        if (local.Date == today)
+            return local.ToString("HH:mm", CultureInfo.CurrentCulture);
+        if (local.Date >= today.AddDays(-6))
+            return local.ToString("ddd", CultureInfo.CurrentCulture);
+        return local.ToString("dd/MM", CultureInfo.CurrentCulture);
+    }
 }
 
 public class MessageViewModel : INotifyPropertyChanged {
     MessageStatus _status;
     string _deliveryText = "";
     Brush _deliveryBrush = B.Dim;
+    Brush _senderColorBrush = B.TextGreen;
 
     public MessageViewModel() {
         SeenBy.CollectionChanged += (_, _) => Notify(nameof(HasSeenBy));
@@ -112,16 +188,18 @@ public class MessageViewModel : INotifyPropertyChanged {
         get => _deliveryBrush;
         set { _deliveryBrush = value; Notify(); }
     }
+    public Brush SenderColorBrush {
+        get => _senderColorBrush;
+        set { _senderColorBrush = value; Notify(); Notify(nameof(NameBrush)); }
+    }
 
     public string TimeStr    => DateTimeOffset.FromUnixTimeMilliseconds(Timestamp)
                                               .LocalDateTime.ToString("HH:mm");
-    public string BulletChar => IsMine ? "▶" : "◀";
-    public Brush  BulletBrush => IsMine ? B.Amber : B.DimGreen;
-    public Brush  TextBrush   => IsMine ? B.AmberText : B.Green;
-    public Brush  NameBrush   => IsMine ? B.AmberDim : B.TextGreen;
+    public Brush  TextBrush   => B.MessageText;
+    public Brush  NameBrush   => SenderColorBrush;
     public Brush  RowBg       => B.Transparent;
     public Brush  BubbleBackground => IsMine ? B.MineBubble : B.PeerBubble;
-    public Brush  BubbleBorderBrush => IsMine ? StatusBrush : B.DimGreen;
+    public Brush  BubbleBorderBrush => IsMine ? B.BubbleBorderMine : B.BubbleBorderTheirs;
     public bool HasSeenBy => SeenBy.Count > 0;
     public bool HasDeliveryText => !string.IsNullOrWhiteSpace(DeliveryText);
     public string StatusChar  => IsMine ? Status switch {
@@ -148,6 +226,25 @@ public class MessageViewModel : INotifyPropertyChanged {
 public sealed class SeenByChipViewModel {
     public string Name { get; init; } = "";
     public Brush Color { get; init; } = B.Dim;
+}
+
+public sealed class UnreadSeparatorViewModel {
+    public string Label { get; init; } = "new messages";
+}
+
+enum ToastSeverity {
+    Info,
+    Warning,
+    Error
+}
+
+public sealed class ToastViewModel {
+    public string Message { get; init; } = "";
+    public Brush BackgroundBrush { get; init; } = B.Transparent;
+    public Brush BorderBrush { get; init; } = B.Transparent;
+    public Brush ForegroundBrush { get; init; } = B.MessageText;
+    public Brush DotBrush { get; init; } = B.Green;
+    public bool CanDismiss { get; init; }
 }
 
 sealed class GroupInvitePayload {
@@ -181,7 +278,8 @@ public partial class MainWindow : Window {
     LocalUser? _user;
 
     readonly ObservableCollection<ConvViewModel> _convs = [];
-    readonly ObservableCollection<MessageViewModel> _messages = [];
+    readonly ObservableCollection<object> _messages = [];
+    readonly ObservableCollection<ToastViewModel> _toasts = [];
 
     ConvViewModel? _activeConv;
     string _activeConvId = "";
@@ -198,16 +296,32 @@ public partial class MainWindow : Window {
 
     // Sequence number tracking per sender per conversation (replay protection on client)
     readonly Dictionary<string, Dictionary<string, long>> _seqTracker = [];
+    readonly Dictionary<string, long> _seqTrackerTouched = [];
     readonly Dictionary<string, HashSet<string>> _messageReceivedBy = [];
     readonly Dictionary<string, HashSet<string>> _messageSeenBy = [];
+    readonly Queue<string> _receiptMessageOrder = [];
+    readonly HashSet<string> _receiptMessageIds = [];
     readonly Dictionary<string, Brush> _userColorCache = [];
     readonly HashSet<string> _sentReceiptKeys = [];
+    readonly Queue<string> _sentReceiptOrder = [];
+    const string ConversationMuteSettingPrefix = "conv-muted:";
+    const string UiThemeSettingKey = "ui-theme";
+    const string DefaultThemeFile = "Theme.Teal.xaml";
+    const int MaxSeqTrackerConversations = 512;
+    const int MaxReceiptCacheMessages = 5_000;
+    const int MaxSentReceiptKeys = 10_000;
 
     // Reconnect outbox flush timer
     DispatcherTimer? _outboxTimer;
+    DispatcherTimer? _typingIndicatorHideTimer;
+    DispatcherTimer? _typingIndicatorPulseTimer;
     bool _networkEventsWired;
     bool _flushingOutbox;
     bool _groupInviteMode;
+    int _typingIndicatorDotCount;
+    string _activeThemeFile = DefaultThemeFile;
+    Forms.NotifyIcon? _notifyIcon;
+    IEnumerable<MessageViewModel> MessageItems => _messages.OfType<MessageViewModel>();
 
     // ── Init ──────────────────────────────────────────────────────────────
 
@@ -216,13 +330,17 @@ public partial class MainWindow : Window {
         AppLog.Info("ui", "main window initialized");
         ApplyBranding();
         ApplyUxPolish();
+        InitializeDesktopNotifications();
         InitializeTestingFeatures();
         MessageList.ItemsSource = _messages;
+        ToastHost.ItemsSource = _toasts;
         ConvList.ItemsSource = _convs;
         LoginRememberSession.IsChecked = Session.HasSession();
         RegisterRememberSession.IsChecked = false;
         InitializeReleaseFeatures();
         InitializeEmojiPicker();
+        InitializeTypingIndicatorTimers();
+        SourceInitialized += (_, _) => WindowsCompositionHelper.TryApplyMica(this);
 
         // Hook scroll event for lazy loading (set after list renders)
         MessageList.Loaded += (_, _) => {
@@ -266,6 +384,9 @@ public partial class MainWindow : Window {
         BtnGroupInvite.Visibility = Visibility.Collapsed;
         BtnGroupMenu.Content = "...";
         BtnGroupMenu.Style = (Style)FindResource("InfoBtn");
+        BtnMuteConversation.Content = "Mute";
+        BtnMuteConversation.Style = (Style)FindResource("InfoBtn");
+        BtnMuteConversation.Visibility = Visibility.Collapsed;
         BtnSettings.Style = (Style)FindResource("InfoBtn");
         BtnMyId.Style = (Style)FindResource("InfoBtn");
 
@@ -273,6 +394,77 @@ public partial class MainWindow : Window {
         TabAddDm.Style = (Style)FindResource("AccentBtn");
         TabAddGroup.Content = "New Group";
         TabAddGroup.Style = (Style)FindResource("GroupBtn");
+    }
+
+    void InitializeTypingIndicatorTimers() {
+        _typingIndicatorHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _typingIndicatorHideTimer.Tick += (_, _) => HideTypingIndicator();
+
+        _typingIndicatorPulseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _typingIndicatorPulseTimer.Tick += (_, _) => {
+            if (TypingIndicator.Visibility != Visibility.Visible) return;
+            _typingIndicatorDotCount = (_typingIndicatorDotCount % 3) + 1;
+            TypingIndicator.Text = $"typing{new string('.', _typingIndicatorDotCount)}";
+        };
+    }
+
+    void UpdateComposerState() {
+        var canCompose = _activeConv != null && InputBox.IsEnabled;
+        BtnEmojiPicker.IsEnabled = canCompose;
+        BtnSend.IsEnabled = canCompose && !string.IsNullOrWhiteSpace(InputBox.Text);
+    }
+
+    void StartTypingIndicator() {
+        if (_activeConv == null || string.IsNullOrWhiteSpace(InputBox.Text)) {
+            HideTypingIndicator();
+            return;
+        }
+
+        _typingIndicatorDotCount = Math.Max(1, _typingIndicatorDotCount);
+        TypingIndicator.Text = $"typing{new string('.', _typingIndicatorDotCount)}";
+        TypingIndicator.Visibility = Visibility.Visible;
+        _typingIndicatorHideTimer?.Stop();
+        _typingIndicatorHideTimer?.Start();
+        _typingIndicatorPulseTimer?.Start();
+    }
+
+    void HideTypingIndicator() {
+        _typingIndicatorHideTimer?.Stop();
+        _typingIndicatorPulseTimer?.Stop();
+        _typingIndicatorDotCount = 0;
+        TypingIndicator.Text = "";
+        TypingIndicator.Visibility = Visibility.Collapsed;
+    }
+
+    static string ConversationMuteSettingKey(string conversationId) =>
+        $"{ConversationMuteSettingPrefix}{conversationId}";
+
+    bool IsConversationMuted(string conversationId) =>
+        _vault.IsOpen &&
+        string.Equals(_vault.GetSetting(ConversationMuteSettingKey(conversationId)), "1", StringComparison.Ordinal);
+
+    void SetConversationMuted(ConvViewModel conv, bool isMuted) {
+        conv.IsMuted = isMuted;
+        if (_vault.IsOpen) {
+            _vault.SetSetting(ConversationMuteSettingKey(conv.Id), isMuted ? "1" : "0");
+        }
+        RefreshMuteButton();
+    }
+
+    void RefreshMuteButton() {
+        if (BtnMuteConversation == null) return;
+        if (_activeConv == null) {
+            BtnMuteConversation.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        BtnMuteConversation.Visibility = Visibility.Visible;
+        BtnMuteConversation.Content = _activeConv.IsMuted ? "Unmute" : "Mute";
+        BtnMuteConversation.ToolTip = _activeConv.IsMuted
+            ? "Allow desktop notifications for this chat"
+            : "Silence desktop notifications for this chat";
+        BtnMuteConversation.Style = (Style)FindResource(_activeConv.IsMuted ? "TermBtn" : "InfoBtn");
+        UpdateComposerState();
     }
 
     void SetConversationSurfaceState(bool hasConversation) {
@@ -292,12 +484,13 @@ public partial class MainWindow : Window {
             }
             InputBox.IsEnabled = hasConversation;
         }
-        if (TypingIndicator != null && !hasConversation)
-            TypingIndicator.Visibility = Visibility.Collapsed;
+        if (!hasConversation)
+            HideTypingIndicator();
         if (!hasConversation && EmojiPopup != null)
             EmojiPopup.IsOpen = false;
         if (!hasConversation && GroupMenuPopup != null)
             GroupMenuPopup.IsOpen = false;
+        UpdateComposerState();
     }
 
     void InitializeEmojiPicker() {
@@ -573,6 +766,60 @@ public partial class MainWindow : Window {
         AuthStatus.Visibility = string.IsNullOrEmpty(msg) ? Visibility.Collapsed : Visibility.Visible;
     }
 
+    void ApplyTheme(string themeFile, bool persist = true) {
+        if (!UiThemeManager.TryApplyTheme(themeFile)) {
+            ShowToast($"theme unavailable: {themeFile}", ToastSeverity.Warning);
+            return;
+        }
+
+        _activeThemeFile = themeFile;
+        if (persist && _vault.IsOpen)
+            _vault.SetSetting(UiThemeSettingKey, themeFile);
+
+        UpdateThemeButtonStates();
+    }
+
+    void ApplySavedTheme() {
+        var savedTheme = _vault.IsOpen
+            ? _vault.GetSetting(UiThemeSettingKey) ?? DefaultThemeFile
+            : DefaultThemeFile;
+        ApplyTheme(savedTheme, persist: false);
+    }
+
+    void UpdateThemeButtonStates() {
+        foreach (var button in new[] { BtnThemeTeal, BtnThemeViolet, BtnThemeBlue, BtnThemeAmber, BtnThemeRose }) {
+            var isActive = string.Equals(button.Tag as string, _activeThemeFile, StringComparison.Ordinal);
+            button.Content = isActive ? "✓" : "";
+            button.BorderThickness = isActive ? new Thickness(2) : new Thickness(1);
+            button.Foreground = isActive ? (Brush)FindResource("White") : (Brush)FindResource("Transparent");
+        }
+    }
+
+    void UpdateConversationSnapshot(ConvViewModel conv, Message? latestMessage = null, string? senderLabel = null) {
+        latestMessage ??= _vault.LoadMessages(conv.Id, 0, 1).LastOrDefault();
+        if (latestMessage == null) {
+            conv.LastMessagePreview = "No messages yet";
+            conv.LastMessageTimestamp = 0;
+            return;
+        }
+
+        conv.LastMessagePreview = BuildConversationPreview(latestMessage, senderLabel);
+        conv.LastMessageTimestamp = latestMessage.Timestamp;
+    }
+
+    string BuildConversationPreview(Message message, string? senderLabel) {
+        var collapsed = string.Join(" ", message.Content
+            .Split(["\r\n", "\n", "\r"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        if (string.IsNullOrWhiteSpace(collapsed))
+            collapsed = "(empty message)";
+
+        var preview = message.ConvType == ConversationType.Group
+            ? $"{(message.IsMine ? "You" : senderLabel ?? ResolveUserLabel(message.SenderId))}: {collapsed}"
+            : collapsed;
+
+        return preview.Length <= 44 ? preview : preview[..41] + "...";
+    }
+
     // ── Start chat ────────────────────────────────────────────────────────
 
     async Task StartChatAsync() {
@@ -580,10 +827,11 @@ public partial class MainWindow : Window {
         AppLog.Info("chat", $"starting session for {AppTelemetry.MaskUserId(_user!.UserId)} via {AppTelemetry.DescribeRelay(_user.ServerUrl)}");
         AuthPanel.Visibility = Visibility.Collapsed;
         ChatPanel.Visibility = Visibility.Visible;
+        ApplySavedTheme();
         SetConversationSurfaceState(false);
 
         // Show user ID in header (truncated)
-        BtnMyId.Content = $"ID {_user!.UserId[..8]}";
+        BtnMyId.Content = $"ID {ShortUserId(_user!.UserId)}";
         UpdateAutomationIdentity();
 
         // Load contacts and groups
@@ -600,21 +848,27 @@ public partial class MainWindow : Window {
         _convs.Clear();
         var contacts = _vault.LoadContacts();
         foreach (var c in contacts) {
-            _convs.Add(new ConvViewModel {
+            var conv = new ConvViewModel {
                 Id = c.ConversationId ?? c.UserId,
                 DisplayName = c.DisplayName,
                 IsGroup = false,
-                ContactData = c
-            });
+                ContactData = c,
+                IsMuted = IsConversationMuted(c.ConversationId ?? c.UserId)
+            };
+            UpdateConversationSnapshot(conv);
+            _convs.Add(conv);
         }
         var groups = _vault.LoadGroups();
         foreach (var g in groups) {
-            _convs.Add(new ConvViewModel {
+            var conv = new ConvViewModel {
                 Id = g.GroupId,
-                DisplayName = $"# {g.Name}",
+                DisplayName = g.Name,
                 IsGroup = true,
-                GroupData = g
-            });
+                GroupData = g,
+                IsMuted = IsConversationMuted(g.GroupId)
+            };
+            UpdateConversationSnapshot(conv);
+            _convs.Add(conv);
         }
         AppLog.Info("chat", $"loaded conversations - direct={contacts.Count} groups={groups.Count}");
     }
@@ -718,8 +972,180 @@ public partial class MainWindow : Window {
     }
 
     void SetSidebarStatus(string message, bool transientRelay = false) {
-        SidebarStatus.Text = message;
-        SidebarStatus.Tag = transientRelay ? TransientRelaySidebarTag : null;
+        if (transientRelay) {
+            SidebarStatus.Text = message;
+            SidebarStatus.Tag = TransientRelaySidebarTag;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(message)) return;
+        ShowToast(message, ClassifyToastSeverity(message));
+    }
+
+    static ToastSeverity ClassifyToastSeverity(string message) {
+        if (message.StartsWith("!", StringComparison.Ordinal))
+            return ToastSeverity.Error;
+
+        if (message.Contains("warning", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("review", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("retry", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("queued", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("offline", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("can't", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("invalid", StringComparison.OrdinalIgnoreCase))
+            return ToastSeverity.Warning;
+
+        return ToastSeverity.Info;
+    }
+
+    static Brush WithOpacity(Brush source, double opacity) {
+        var clone = source.CloneCurrentValue();
+        clone.Opacity = opacity;
+        clone.Freeze();
+        return clone;
+    }
+
+    void ShowToast(string message, ToastSeverity severity) {
+        if (_toasts.Any(t => string.Equals(t.Message, message, StringComparison.Ordinal)))
+            return;
+
+        var accent = severity switch {
+            ToastSeverity.Error => B.Red,
+            ToastSeverity.Warning => B.Amber,
+            _ => B.Green
+        };
+        var toast = new ToastViewModel {
+            Message = message.TrimStart('!', ' '),
+            DotBrush = accent,
+            BorderBrush = WithOpacity(accent, 0.4),
+            BackgroundBrush = WithOpacity(accent, 0.18),
+            ForegroundBrush = severity switch {
+                ToastSeverity.Error => B.AmberText,
+                ToastSeverity.Warning => B.AmberText,
+                _ => B.TextGreen
+            },
+            CanDismiss = severity != ToastSeverity.Info
+        };
+
+        _toasts.Insert(0, toast);
+        if (_toasts.Count > 4)
+            _toasts.RemoveAt(_toasts.Count - 1);
+
+        if (!toast.CanDismiss)
+            _ = AutoDismissToastAsync(toast, TimeSpan.FromSeconds(3));
+    }
+
+    async Task AutoDismissToastAsync(ToastViewModel toast, TimeSpan delay) {
+        try {
+            await Task.Delay(delay, _uiLifetimeCts.Token);
+            await Dispatcher.InvokeAsync(() => _toasts.Remove(toast));
+        } catch (TaskCanceledException) {
+        }
+    }
+
+    void DismissToast_Click(object s, RoutedEventArgs e) {
+        if ((s as FrameworkElement)?.DataContext is ToastViewModel toast)
+            _toasts.Remove(toast);
+    }
+
+    void CopyMessageMenuItem_Click(object s, RoutedEventArgs e) {
+        if ((s as FrameworkElement)?.DataContext is not MessageViewModel vm ||
+            string.IsNullOrWhiteSpace(vm.Content))
+            return;
+
+        Clipboard.SetText(vm.Content);
+        ShowToast("Message copied", ToastSeverity.Info);
+    }
+
+    void MainWindow_PreviewKeyDown(object s, KeyEventArgs e) {
+        if (Keyboard.Modifiers != ModifierKeys.Control || ChatPanel.Visibility != Visibility.Visible)
+            return;
+
+        if (e.Key == Key.N) {
+            BtnAddContact_Click(BtnSidebarAddFriend, new RoutedEventArgs());
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.G) {
+            BtnQuickNewGroup_Click(BtnQuickNewGroup, new RoutedEventArgs());
+            e.Handled = true;
+        }
+    }
+
+    void InitializeDesktopNotifications() {
+        try {
+            var processPath = Environment.ProcessPath;
+            System.Drawing.Icon? icon = null;
+            if (!string.IsNullOrWhiteSpace(processPath) && System.IO.File.Exists(processPath)) {
+                icon = System.Drawing.Icon.ExtractAssociatedIcon(processPath);
+            }
+
+            _notifyIcon = new Forms.NotifyIcon {
+                Text = AppBranding.WindowTitle,
+                Visible = true,
+                BalloonTipIcon = Forms.ToolTipIcon.Info,
+                Icon = icon ?? System.Drawing.SystemIcons.Information
+            };
+            _notifyIcon.BalloonTipClicked += (_, _) => BringWindowToFront();
+            _notifyIcon.DoubleClick += (_, _) => BringWindowToFront();
+        } catch (Exception ex) {
+            AppLog.Warn("notify", $"desktop notifications unavailable: {ex.Message}");
+        }
+    }
+
+    bool ShouldNotifyForConversation(string conversationId) {
+        var conv = _convs.FirstOrDefault(c => string.Equals(c.Id, conversationId, StringComparison.Ordinal));
+        if (conv?.IsMuted == true) return false;
+
+        return WindowState == WindowState.Minimized ||
+            !IsActive ||
+            !string.Equals(_activeConvId, conversationId, StringComparison.Ordinal);
+    }
+
+    void ShowDesktopNotification(string title, string body) {
+        if (_notifyIcon == null || string.IsNullOrWhiteSpace(body)) return;
+
+        try {
+            _notifyIcon.BalloonTipTitle = title;
+            _notifyIcon.BalloonTipText = body.Length > 220 ? body[..217] + "..." : body;
+            _notifyIcon.ShowBalloonTip(4500);
+            AppLog.Info("notify", $"desktop notification shown title={title}");
+        } catch (Exception ex) {
+            AppLog.Warn("notify", $"failed to show notification: {ex.Message}");
+        }
+    }
+
+    static string ShortUserId(string? userId) {
+        if (string.IsNullOrWhiteSpace(userId)) return "";
+        var trimmed = userId.Trim();
+        return trimmed.Length <= 8 ? trimmed : trimmed[..8];
+    }
+
+    static bool IsValidUserId(string userId) {
+        if (userId.Length != 22) return false;
+
+        foreach (var ch in userId) {
+            var isAsciiLetter = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+            var isDigit = ch >= '0' && ch <= '9';
+            if (!isAsciiLetter && !isDigit && ch != '-' && ch != '_') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    void BringWindowToFront() {
+        Dispatcher.Invoke(() => {
+            if (WindowState == WindowState.Minimized) {
+                WindowState = WindowState.Normal;
+            }
+            Activate();
+            Topmost = true;
+            Topmost = false;
+            Focus();
+        });
     }
 
     void RunUiTask(Func<Task> work, string operation,
@@ -779,6 +1205,7 @@ public partial class MainWindow : Window {
         }
 
         _vault.SaveMessage(msg);
+        UpdateConversationSnapshot(conv, msg, contact.DisplayName);
         await _net.AckDmAsync(senderId, seq);
         await SendDirectReceiptAsync(contact, msg, ReceiptStatusReceived);
 
@@ -789,6 +1216,9 @@ public partial class MainWindow : Window {
             await SendDirectReceiptAsync(contact, msg, ReceiptStatusSeen);
         } else {
             conv.UnreadCount++;
+        }
+        if (ShouldNotifyForConversation(conv.Id)) {
+            ShowDesktopNotification(contact.DisplayName, $"New message from {contact.DisplayName}");
         }
         AppLog.Info("recv", $"stored direct message {AppTelemetry.MaskUserId(msg.Id)} seq={seq} active={(conv.Id == _activeConvId)}");
 
@@ -807,7 +1237,8 @@ public partial class MainWindow : Window {
         AppLog.Info("recv", $"group envelope group={AppTelemetry.MaskUserId(groupId)} from {AppTelemetry.MaskUserId(senderId)} seq={seq} bytes={payload.Length}");
 
         // Find sender contact for signature verification
-        var senderContact = _vault.LoadContacts().FirstOrDefault(c => c.UserId == senderId);
+        var senderContact = _convs.FirstOrDefault(c =>
+            string.Equals(c.ContactData?.UserId, senderId, StringComparison.Ordinal))?.ContactData;
         if (senderContact == null) return;
         if (!await EnsureContactKeysAsync(senderContact)) return;
         if (!Crypto.Verify(senderContact.SignPubKey, $"{actualPayload}:{seq}", sig)) return;
@@ -827,6 +1258,7 @@ public partial class MainWindow : Window {
             return;
         }
         _vault.SaveMessage(msg);
+        UpdateConversationSnapshot(conv, msg, senderContact.DisplayName);
         await _net.AckGroupAsync(groupId, senderId, seq);
         await SendGroupReceiptAsync(senderContact, msg, ReceiptStatusReceived);
 
@@ -836,6 +1268,9 @@ public partial class MainWindow : Window {
             await SendGroupReceiptAsync(senderContact, msg, ReceiptStatusSeen);
         } else {
             conv.UnreadCount++;
+        }
+        if (ShouldNotifyForConversation(groupId)) {
+            ShowDesktopNotification(group.Name, $"New message from {senderContact.DisplayName}");
         }
         AppLog.Info("recv", $"stored group message {AppTelemetry.MaskUserId(msg.Id)} seq={seq} active={(groupId == _activeConvId)}");
 
@@ -853,22 +1288,22 @@ public partial class MainWindow : Window {
         var started = AppTelemetry.StartTimer();
         _activeConv = conv;
         _activeConvId = conv.Id;
+        var unreadCount = conv.UnreadCount;
         conv.UnreadCount = 0;
 
         ActiveConvName.Text = conv.IsGroup
             ? $"Group · {conv.DisplayName}"
-            : $"Direct · {conv.DisplayName} · {conv.ContactData?.UserId[..8]}";
-
-        ActiveConvName.Text = conv.IsGroup
-            ? $"Group - {conv.DisplayName}"
-            : $"Direct - {conv.DisplayName} - {conv.ContactData?.UserId[..8]}";
+            : $"Direct · {conv.DisplayName}" +
+              (string.IsNullOrWhiteSpace(conv.ContactData?.UserId)
+                  ? ""
+                  : $" · {ShortUserId(conv.ContactData?.UserId)}");
 
         SetConversationSurfaceState(true);
         UpdateActiveConversationSecurityUi();
         if (InputBox.IsEnabled) InputBox.Focus();
 
         // Load initial messages
-        LoadInitialMessages(conv.Id);
+        LoadInitialMessages(conv.Id, unreadCount);
         RunUiTask(MarkActiveConversationSeenAsync, "mark active messages seen", showSidebarErrors: false);
         AppLog.Info("ui", $"opened {AppTelemetry.DescribeConversation(conv.Id, conv.IsGroup)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
     }
@@ -879,6 +1314,7 @@ public partial class MainWindow : Window {
             : Visibility.Collapsed;
         BtnGroupInvite.Visibility = Visibility.Collapsed;
         BtnGroupMenu.Visibility = groupInviteVisible;
+        RefreshMuteButton();
         if (_activeConv?.IsGroup == true) {
             RefreshActiveGroupMenu();
         } else {
@@ -888,27 +1324,27 @@ public partial class MainWindow : Window {
         if (_activeConv == null) {
             BtnSecurityReview.Visibility = Visibility.Collapsed;
             InputBox.IsEnabled = false;
-            BtnSend.IsEnabled = false;
+            UpdateComposerState();
             return;
         }
 
         if (_activeConv?.ContactData is not Contact contact) {
             BtnSecurityReview.Visibility = Visibility.Collapsed;
             InputBox.IsEnabled = true;
-            BtnSend.IsEnabled = true;
+            UpdateComposerState();
             return;
         }
 
         BtnSecurityReview.Visibility = Visibility.Visible;
         if (contact.HasPendingKeyChange) {
-            BtnSecurityReview.Content = "镜 Review";
+            BtnSecurityReview.Content = "Review";
             BtnSecurityReview.BorderBrush = (Brush)FindResource("Red");
             BtnSecurityReview.Foreground = (Brush)FindResource("Red");
             BtnSecurityReview.ToolTip = "contact keys changed - review before sending";
             InputBox.IsEnabled = false;
-            BtnSend.IsEnabled = false;
             SetSidebarStatus($"security review required: {contact.DisplayName}'s relay keys changed");
             BtnSecurityReview.Content = "Review Keys";
+            UpdateComposerState();
             return;
         }
 
@@ -918,13 +1354,12 @@ public partial class MainWindow : Window {
         BtnSecurityReview.Foreground = contact.IsVerified
             ? (Brush)FindResource("Green")
             : (Brush)FindResource("Amber");
-        BtnSecurityReview.Content = contact.IsVerified ? "镜 Verified" : "镜 Verify";
+        BtnSecurityReview.Content = contact.IsVerified ? "Verified" : "Verify";
         BtnSecurityReview.ToolTip = contact.IsVerified
             ? "contact safety number verified"
             : "compare and verify this contact's safety number";
         InputBox.IsEnabled = true;
-        BtnSend.IsEnabled = true;
-        BtnSecurityReview.Content = contact.IsVerified ? "Verified" : "Verify";
+        UpdateComposerState();
     }
 
     // ── Lazy message loading ───────────────────────────────────────────────
@@ -934,7 +1369,7 @@ public partial class MainWindow : Window {
     /// This is the only method that replaces the entire list.
     /// All other loads are incremental (prepend older).
     /// </summary>
-    void LoadInitialMessages(string convId) {
+    void LoadInitialMessages(string convId, int unreadCount = 0) {
         var started = AppTelemetry.StartTimer();
         _messages.Clear();
         _msgOffset = 0;
@@ -945,8 +1380,17 @@ public partial class MainWindow : Window {
         HydrateReceiptCache(page);
 
         var contacts = _vault.LoadContacts().ToDictionary(c => c.UserId, c => c.DisplayName);
-        foreach (var msg in page)
-            _messages.Add(ToViewModel(msg, contacts.GetValueOrDefault(msg.SenderId, msg.SenderId[..8])));
+        var separatorIndex = unreadCount > 0
+            ? Math.Max(0, page.Count - Math.Min(unreadCount, page.Count))
+            : -1;
+
+        for (int i = 0; i < page.Count; i++) {
+            if (i == separatorIndex)
+                _messages.Add(new UnreadSeparatorViewModel());
+
+            var msg = page[i];
+            _messages.Add(ToViewModel(msg, contacts.GetValueOrDefault(msg.SenderId, ShortUserId(msg.SenderId))));
+        }
 
         // Scroll to bottom after layout — use Loaded priority to ensure items are rendered
         Dispatcher.InvokeAsync(ScrollToBottom, DispatcherPriority.Loaded);
@@ -997,7 +1441,7 @@ public partial class MainWindow : Window {
         for (int i = older.Count - 1; i >= 0; i--) {
             var msg = older[i];
             _messages.Insert(0, ToViewModel(msg,
-                contacts.GetValueOrDefault(msg.SenderId, msg.SenderId[..8])));
+                contacts.GetValueOrDefault(msg.SenderId, ShortUserId(msg.SenderId))));
         }
 
         // Restore scroll position AFTER items render
@@ -1042,8 +1486,13 @@ public partial class MainWindow : Window {
     }
 
     void InputBox_TextChanged(object s, TextChangedEventArgs e) {
-        // Typing indicator (debounced)
-        // Could send typing signal to server here — omitted to keep server stateless
+        UpdateComposerState();
+        if (_activeConv == null || !InputBox.IsEnabled || string.IsNullOrWhiteSpace(InputBox.Text)) {
+            HideTypingIndicator();
+            return;
+        }
+
+        StartTypingIndicator();
     }
 
     void BtnSend_Click(object s, RoutedEventArgs e) =>
@@ -1067,8 +1516,9 @@ public partial class MainWindow : Window {
         msg.ConvType = _activeConv.IsGroup ? ConversationType.Group : ConversationType.Direct;
 
         // Show optimistically
-        var senderName = $"{_user.DisplayName} (you)";
+        var senderName = _user.DisplayName;
         var vm = ToViewModel(msg, senderName);
+        UpdateConversationSnapshot(_activeConv, msg, senderName);
         AddMessageToList(vm);
 
         if (_activeConv.IsGroup) {
@@ -1163,7 +1613,7 @@ public partial class MainWindow : Window {
                 if (sent) {
                     _vault.RemoveOutbox(item.Id);
                     _vault.UpdateMessageStatus(item.Id, MessageStatus.Sent);
-                    var vm = _messages.FirstOrDefault(m => m.Id == item.Id);
+                    var vm = MessageItems.FirstOrDefault(m => m.Id == item.Id);
                     if (vm != null) {
                         vm.Status = MessageStatus.Sent;
                         ApplyReceiptUi(vm);
@@ -1245,7 +1695,7 @@ public partial class MainWindow : Window {
         foreach (var item in pending) {
             _vault.RemoveOutbox(item.Id);
             _vault.UpdateMessageStatus(item.Id, MessageStatus.Failed);
-            var vm = _messages.FirstOrDefault(m => m.Id == item.Id);
+            var vm = MessageItems.FirstOrDefault(m => m.Id == item.Id);
             if (vm != null) {
                 vm.Status = MessageStatus.Failed;
                 ApplyReceiptUi(vm);
@@ -1285,7 +1735,7 @@ public partial class MainWindow : Window {
         if (_convKeys.TryGetValue(convId, out var cached)) return cached;
 
         // Try loading from vault
-        var (_, storedSecret) = _vault.LoadConvState(convId);
+        var (existingSeq, storedSecret) = _vault.LoadConvState(convId);
         if (storedSecret != null) {
             _convKeys[convId] = storedSecret;
             return storedSecret;
@@ -1294,7 +1744,7 @@ public partial class MainWindow : Window {
         // Derive from ECDH
         try {
             var secret = Crypto.DeriveSharedSecret(_user!.DhPrivKey, contact.DhPubKey, convId);
-            _vault.SaveConvState(convId, 0, secret);
+            _vault.SaveConvState(convId, existingSeq, secret);
             _convKeys[convId] = secret;
             return secret;
         } catch { return null; }
@@ -1307,6 +1757,14 @@ public partial class MainWindow : Window {
             _seqTracker[convId] = senders = [];
         if (senders.TryGetValue(senderId, out var last) && seq <= last) return false;
         senders[senderId] = seq;
+        _seqTrackerTouched[convId] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (_seqTrackerTouched.Count > MaxSeqTrackerConversations) {
+            var staleConvId = _seqTrackerTouched
+                .OrderBy(entry => entry.Value)
+                .First().Key;
+            _seqTrackerTouched.Remove(staleConvId);
+            _seqTracker.Remove(staleConvId);
+        }
         return true;
     }
 
@@ -1325,6 +1783,19 @@ public partial class MainWindow : Window {
             OwnerId = group.OwnerId,
             Name = group.Name
         });
+
+    internal static bool IsTrustedGroupInviteOwner(string senderUserId, string? existingOwnerId, string? inviteOwnerId) {
+        if (string.IsNullOrWhiteSpace(senderUserId) || string.IsNullOrWhiteSpace(inviteOwnerId)) {
+            return false;
+        }
+
+        if (!string.Equals(inviteOwnerId, senderUserId, StringComparison.Ordinal)) {
+            return false;
+        }
+
+        return string.IsNullOrWhiteSpace(existingOwnerId) ||
+            string.Equals(existingOwnerId, senderUserId, StringComparison.Ordinal);
+    }
 
     static bool TryParseGroupInvite(string content, out GroupInvitePayload? invite) {
         invite = null;
@@ -1385,7 +1856,15 @@ public partial class MainWindow : Window {
 
     bool RegisterReceiptSent(string recipientId, string messageId, string status) {
         var key = $"{recipientId}|{messageId}|{status}";
-        return _sentReceiptKeys.Add(key);
+        if (!_sentReceiptKeys.Add(key)) return false;
+
+        _sentReceiptOrder.Enqueue(key);
+        while (_sentReceiptOrder.Count > MaxSentReceiptKeys) {
+            var staleKey = _sentReceiptOrder.Dequeue();
+            _sentReceiptKeys.Remove(staleKey);
+        }
+
+        return true;
     }
 
     HashSet<string> GetReceiptSet(Dictionary<string, HashSet<string>> map, string messageId) {
@@ -1401,7 +1880,21 @@ public partial class MainWindow : Window {
             _ => null
         };
 
+    void TrackReceiptMessageId(string messageId) {
+        if (!_receiptMessageIds.Add(messageId)) return;
+
+        _receiptMessageOrder.Enqueue(messageId);
+        while (_receiptMessageOrder.Count > MaxReceiptCacheMessages) {
+            var staleMessageId = _receiptMessageOrder.Dequeue();
+            _receiptMessageIds.Remove(staleMessageId);
+            _messageReceivedBy.Remove(staleMessageId);
+            _messageSeenBy.Remove(staleMessageId);
+        }
+    }
+
     void RegisterIncomingReceipt(string messageId, string fromUserId, MessageStatus status) {
+        TrackReceiptMessageId(messageId);
+
         if (status == MessageStatus.Seen) {
             GetReceiptSet(_messageReceivedBy, messageId).Add(fromUserId);
             GetReceiptSet(_messageSeenBy, messageId).Add(fromUserId);
@@ -1441,9 +1934,15 @@ public partial class MainWindow : Window {
         if (_userColorCache.TryGetValue(userId, out var cached)) return cached;
 
         var palette = new[] {
-            "#7AA2FF", "#6EE7C8", "#F6B15F", "#FF8BA7", "#C6A0FF", "#9BE564", "#FFB86B", "#7FD3F7"
+            "#6EE7C8", "#7AA2FF", "#F6B15F", "#FF8BA7",
+            "#C6A0FF", "#9BE564", "#FFB86B", "#7FD3F7",
+            "#F472B6", "#34D399", "#A78BFA", "#FB923C",
+            "#60A5FA", "#FBBF24", "#E879F9", "#2DD4BF"
         };
-        var idx = Math.Abs(StringComparer.Ordinal.GetHashCode(userId)) % palette.Length;
+        uint hash = 2166136261;
+        foreach (var ch in userId)
+            hash = (hash ^ ch) * 16777619;
+        var idx = (int)(hash % (uint)palette.Length);
         var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(palette[idx])!;
         brush.Freeze();
         _userColorCache[userId] = brush;
@@ -1519,7 +2018,7 @@ public partial class MainWindow : Window {
     }
 
     void ApplyReceiptUi(string messageId) {
-        var vm = _messages.FirstOrDefault(m => m.Id == messageId);
+        var vm = MessageItems.FirstOrDefault(m => m.Id == messageId);
         if (vm != null) {
             ApplyReceiptUi(vm);
         }
@@ -1587,7 +2086,7 @@ public partial class MainWindow : Window {
         if (_activeConv == null) return;
 
         if (!_activeConv.IsGroup && _activeConv.ContactData is Contact directContact) {
-            var visibleIncoming = _messages.Where(m =>
+            var visibleIncoming = MessageItems.Where(m =>
                 !m.IsMine &&
                 !m.IsGroup &&
                 string.Equals(m.ConversationId, _activeConvId, StringComparison.Ordinal)).ToList();
@@ -1602,13 +2101,16 @@ public partial class MainWindow : Window {
         }
 
         if (_activeConv.IsGroup) {
-            var visibleIncoming = _messages.Where(m =>
+            var contactsByUserId = _convs
+                .Where(c => c.ContactData != null)
+                .Select(c => c.ContactData!)
+                .ToDictionary(c => c.UserId, StringComparer.Ordinal);
+            var visibleIncoming = MessageItems.Where(m =>
                 !m.IsMine &&
                 m.IsGroup &&
                 string.Equals(m.ConversationId, _activeConvId, StringComparison.Ordinal)).ToList();
             foreach (var vm in visibleIncoming) {
-                var senderContact = _vault.LoadContacts().FirstOrDefault(c => c.UserId == vm.SenderId);
-                if (senderContact == null) continue;
+                if (!contactsByUserId.TryGetValue(vm.SenderId, out var senderContact)) continue;
                 var incoming = new Message {
                     Id = vm.Id,
                     ConversationId = vm.ConversationId
@@ -1622,9 +2124,29 @@ public partial class MainWindow : Window {
         if (TryParseDeliveryReceipt(msg.Content, out var receipt) && receipt != null) {
             var receiptStatus = ParseReceiptStatus(receipt.Status);
             if (receiptStatus is MessageStatus.Delivered or MessageStatus.Seen) {
-                if (!_vault.MessageExists(receipt.MessageId)) {
+                var metadata = _vault.GetMessageMetadata(receipt.MessageId);
+                if (metadata == null || !metadata.Value.isMine) {
+                    AppLog.Warn("receipt", $"ignored receipt for unknown or incoming message {AppTelemetry.MaskUserId(receipt.MessageId)}");
                     return true;
                 }
+
+                if (!string.Equals(metadata.Value.conversationId, receipt.ConversationId, StringComparison.Ordinal)) {
+                    AppLog.Warn("receipt", $"ignored receipt with mismatched conversation target msg={AppTelemetry.MaskUserId(receipt.MessageId)}");
+                    return true;
+                }
+
+                if (receipt.Scope == ReceiptScopeDirect) {
+                    var expectedDirectConversationId = senderContact.ConversationId ?? senderContact.UserId;
+                    if (metadata.Value.convType != ConversationType.Direct ||
+                        !string.Equals(receipt.ConversationId, expectedDirectConversationId, StringComparison.Ordinal)) {
+                        AppLog.Warn("receipt", $"ignored direct receipt with invalid target msg={AppTelemetry.MaskUserId(receipt.MessageId)}");
+                        return true;
+                    }
+                } else if (metadata.Value.convType != ConversationType.Group) {
+                    AppLog.Warn("receipt", $"ignored group receipt with invalid target msg={AppTelemetry.MaskUserId(receipt.MessageId)}");
+                    return true;
+                }
+
                 RegisterIncomingReceipt(receipt.MessageId, senderContact.UserId, receiptStatus.Value);
                 _vault.UpsertMessageReceipt(receipt.MessageId, senderContact.UserId, receiptStatus.Value, receipt.Ts);
                 if (receipt.Scope == ReceiptScopeDirect) {
@@ -1641,13 +2163,12 @@ public partial class MainWindow : Window {
                 ?? _vault.LoadGroups().FirstOrDefault(g => g.GroupId == deletePayload.GroupId);
             if (targetGroup == null) return true;
 
-            if (!string.Equals(targetGroup.OwnerId, senderContact.UserId, StringComparison.Ordinal) &&
-                !string.Equals(deletePayload.OwnerId, senderContact.UserId, StringComparison.Ordinal)) {
+            if (!string.Equals(targetGroup.OwnerId, senderContact.UserId, StringComparison.Ordinal)) {
                 AppLog.Warn("group", $"ignored delete notice for {AppTelemetry.MaskUserId(deletePayload.GroupId)} from non-owner {AppTelemetry.MaskUserId(senderContact.UserId)}");
                 return true;
             }
 
-            RemoveGroupLocally(deletePayload.GroupId, $"group deleted: {deletePayload.Name}");
+            RemoveGroupLocally(deletePayload.GroupId, $"group deleted: {targetGroup.Name}");
             AppLog.Info("group", $"applied group delete for {AppTelemetry.MaskUserId(deletePayload.GroupId)} from {AppTelemetry.MaskUserId(senderContact.UserId)}");
             return true;
         }
@@ -1658,6 +2179,15 @@ public partial class MainWindow : Window {
         if (!invite.MemberIds.Contains(_user.UserId) || !invite.MemberIds.Contains(senderContact.UserId))
             return true;
 
+        var existing = _convs.FirstOrDefault(c => c.GroupData?.GroupId == invite.GroupId);
+        var existingGroup = existing?.GroupData ?? _vault.LoadGroups().FirstOrDefault(g => g.GroupId == invite.GroupId);
+        if (!IsTrustedGroupInviteOwner(senderContact.UserId, existingGroup?.OwnerId, invite.OwnerId) ||
+            !invite.MemberIds.Contains(invite.OwnerId)) {
+            AppLog.Warn("group", $"ignored untrusted group invite for {AppTelemetry.MaskUserId(invite.GroupId)} from {AppTelemetry.MaskUserId(senderContact.UserId)}");
+            SetSidebarStatus("ignored an untrusted group invite");
+            return true;
+        }
+
         byte[] groupKey;
         try {
             groupKey = Convert.FromBase64String(invite.GroupKey);
@@ -1665,9 +2195,12 @@ public partial class MainWindow : Window {
             SetSidebarStatus("received an invalid group invite");
             return true;
         }
+        if (groupKey.Length != 32) {
+            SetSidebarStatus("received an invalid group invite (bad key length)");
+            return true;
+        }
 
-        var existing = _convs.FirstOrDefault(c => c.GroupData?.GroupId == invite.GroupId);
-        var group = existing?.GroupData ?? new GroupInfo {
+        var group = existingGroup ?? new GroupInfo {
             GroupId = invite.GroupId,
             CreatedAt = msg.Timestamp
         };
@@ -1675,20 +2208,21 @@ public partial class MainWindow : Window {
         group.Name = invite.Name;
         group.MemberIds = invite.MemberIds.Distinct().ToList();
         group.GroupKey = groupKey;
-        if (!string.IsNullOrWhiteSpace(invite.OwnerId))
-            group.OwnerId = invite.OwnerId;
+        group.OwnerId = senderContact.UserId;
         _vault.SaveGroup(group);
 
         if (existing == null) {
             _convs.Add(new ConvViewModel {
                 Id = group.GroupId,
-                DisplayName = $"# {group.Name}",
+                DisplayName = group.Name,
                 IsGroup = true,
-                GroupData = group
+                GroupData = group,
+                IsMuted = IsConversationMuted(group.GroupId)
             });
         } else {
-            existing.DisplayName = $"# {group.Name}";
+            existing.DisplayName = group.Name;
             existing.GroupData = group;
+            existing.IsMuted = IsConversationMuted(group.GroupId);
         }
 
         SetSidebarStatus($"joined group: {group.Name}");
@@ -1697,6 +2231,10 @@ public partial class MainWindow : Window {
 
     async Task SendGroupInvitesAsync(GroupInfo group, Dictionary<string, Contact> contactsById, IEnumerable<string>? targetMembers = null) {
         if (_user == null) return;
+        if (!string.Equals(group.OwnerId, _user.UserId, StringComparison.Ordinal)) {
+            SetSidebarStatus("only the group owner can invite members");
+            return;
+        }
 
         var recipients = (targetMembers ?? group.MemberIds)
             .Where(id => id != _user.UserId)
@@ -1805,7 +2343,7 @@ public partial class MainWindow : Window {
         GroupMemberIds.Clear();
         if (_groupInviteMode && _activeConv?.IsGroup == true && _activeConv.GroupData != null) {
             _groupInviteMode = true;
-            GroupModeHint.Text = $"Invite members to #{_activeConv.GroupData.Name}.";
+            GroupModeHint.Text = $"Invite members to {_activeConv.GroupData.Name}.";
             NewGroupName.Text = _activeConv.GroupData.Name;
             NewGroupName.IsEnabled = false;
             BtnConfirmCreateGroup.Content = "Invite members";
@@ -1830,6 +2368,7 @@ public partial class MainWindow : Window {
         var name = AddContactName.Text.Trim();
 
         if (string.IsNullOrEmpty(uid)) { ShowAddStatus("enter a user id"); return; }
+        if (!IsValidUserId(uid)) { ShowAddStatus("enter a valid user id"); return; }
         if (string.IsNullOrEmpty(name)) { ShowAddStatus("enter a display name"); return; }
         if (uid == _user!.UserId) { ShowAddStatus("that's your own id"); return; }
         if (_vault.LoadContacts().Any(c => c.UserId == uid)) { ShowAddStatus("already in contacts"); return; }
@@ -1862,7 +2401,8 @@ public partial class MainWindow : Window {
             Id = contact.ConversationId,
             DisplayName = name,
             IsGroup = false,
-            ContactData = contact
+            ContactData = contact,
+            IsMuted = false
         };
         _convs.Add(conv);
         AddOverlay.Visibility = Visibility.Collapsed;
@@ -1907,9 +2447,10 @@ public partial class MainWindow : Window {
         _vault.SaveGroup(group);
         var conv = new ConvViewModel {
             Id = group.GroupId,
-            DisplayName = $"# {name}",
+            DisplayName = name,
             IsGroup = true,
-            GroupData = group
+            GroupData = group,
+            IsMuted = false
         };
         _convs.Add(conv);
         AddOverlay.Visibility = Visibility.Collapsed;
@@ -1919,13 +2460,17 @@ public partial class MainWindow : Window {
         if (inviteTargets.Count > 0) {
             await SendGroupInvitesAsync(group, contactsById, inviteTargets);
         } else {
-            SetSidebarStatus($"created #{group.Name}. invite members later from the Group tab.");
+            SetSidebarStatus($"created {group.Name}. invite members later from the Group tab.");
         }
     }
 
     async Task InviteMembersToActiveGroupAsync() {
         if (_activeConv?.GroupData is not GroupInfo group || _user == null) {
             ShowAddStatus("open a group first");
+            return;
+        }
+        if (!IsCurrentUserGroupOwner(group)) {
+            ShowAddStatus("only the group owner can invite members");
             return;
         }
 
@@ -1957,7 +2502,7 @@ public partial class MainWindow : Window {
         await SendGroupInvitesAsync(group, contactsById, newMembers);
 
         AddOverlay.Visibility = Visibility.Collapsed;
-        SetSidebarStatus($"invited {newMembers.Count} member(s) to #{group.Name}");
+        SetSidebarStatus($"invited {newMembers.Count} member(s) to {group.Name}");
     }
 
     bool IsCurrentUserGroupOwner(GroupInfo group) =>
@@ -1968,7 +2513,7 @@ public partial class MainWindow : Window {
     void RefreshActiveGroupMenu() {
         if (_activeConv?.GroupData is not GroupInfo group) return;
 
-        GroupMenuTitleText.Text = $"# {group.Name}";
+        GroupMenuTitleText.Text = group.Name;
         GroupMenuOwnerText.Text = string.IsNullOrWhiteSpace(group.OwnerId)
             ? "owner unknown"
             : $"owner: {ResolveUserLabel(group.OwnerId)}";
@@ -1986,6 +2531,17 @@ public partial class MainWindow : Window {
         if (_activeConv?.GroupData == null) return;
         RefreshActiveGroupMenu();
         GroupMenuPopup.IsOpen = !GroupMenuPopup.IsOpen;
+    }
+
+    void BtnMuteConversation_Click(object s, RoutedEventArgs e) {
+        if (_activeConv == null) return;
+
+        var next = !_activeConv.IsMuted;
+        SetConversationMuted(_activeConv, next);
+        SetSidebarStatus(next
+            ? $"muted notifications for {_activeConv.DisplayName}"
+            : $"unmuted notifications for {_activeConv.DisplayName}");
+        AppLog.Info("notify", $"{(next ? "muted" : "unmuted")} {AppTelemetry.DescribeConversation(_activeConv.Id, _activeConv.IsGroup)}");
     }
 
     void BtnCloseGroupMenu_Click(object s, RoutedEventArgs e) =>
@@ -2059,7 +2615,7 @@ public partial class MainWindow : Window {
         if (confirm != MessageBoxResult.Yes) return;
 
         await Task.CompletedTask;
-        RemoveGroupLocally(group.GroupId, $"left #{group.Name}");
+        RemoveGroupLocally(group.GroupId, $"left {group.Name}");
     }
 
     void BtnDeleteGroup_Click(object s, RoutedEventArgs e) =>
@@ -2074,14 +2630,14 @@ public partial class MainWindow : Window {
 
         GroupMenuPopup.IsOpen = false;
         var confirm = MessageBox.Show(
-            $"Delete #{group.Name} for all current members?\n\nThey will stop seeing it once your delete notice reaches them.",
+            $"Delete {group.Name} for all current members?\n\nThey will stop seeing it once your delete notice reaches them.",
             "Delete Group",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
 
         await SendGroupDeleteNoticeAsync(group);
-        RemoveGroupLocally(group.GroupId, $"deleted #{group.Name}");
+        RemoveGroupLocally(group.GroupId, $"deleted {group.Name}");
     }
 
     void ShowAddStatus(string msg, bool isError = true) {
@@ -2238,7 +2794,7 @@ public partial class MainWindow : Window {
             Id = msg.Id,
             ConversationId = msg.ConversationId,
             SenderId = msg.SenderId,
-            SenderLabel = msg.IsMine ? $"{_user?.DisplayName ?? "me"}:" : $"{senderName}:",
+            SenderLabel = msg.IsMine ? (_user?.DisplayName ?? "You") : senderName,
             Content = msg.Content,
             Timestamp = msg.Timestamp,
             SeqNum = msg.SeqNum,
@@ -2246,6 +2802,11 @@ public partial class MainWindow : Window {
             IsGroup = msg.ConvType == ConversationType.Group,
             Status = msg.Status
         };
+        vm.SenderColorBrush = msg.IsMine
+            ? B.AmberDim
+            : msg.ConvType == ConversationType.Group
+                ? ColorForUserId(msg.SenderId)
+                : B.Green;
         ApplyReceiptUi(vm);
         return vm;
     }
@@ -2267,6 +2828,11 @@ public partial class MainWindow : Window {
     protected override void OnClosed(EventArgs e) {
         _uiLifetimeCts.Cancel();
         _outboxTimer?.Stop();
+        if (_notifyIcon != null) {
+            _notifyIcon.Visible = false;
+            _notifyIcon.Dispose();
+            _notifyIcon = null;
+        }
         try {
             _net.DisposeAsync().AsTask().GetAwaiter().GetResult();
         } catch (Exception ex) {

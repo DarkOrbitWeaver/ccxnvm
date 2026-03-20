@@ -54,6 +54,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+$createdumpPath = Join-Path $publishDir "createdump.exe"
+if (Test-Path $createdumpPath) {
+    # Velopack 0.0.1298 fails while stubbing createdump.exe during packaging.
+    Remove-Item $createdumpPath -Force
+}
+
 $vpkPath = Join-Path $toolsDir "vpk.exe"
 if (Test-Path $vpkPath) {
     dotnet tool update --tool-path $toolsDir vpk --version $velopackVersion | Out-Host

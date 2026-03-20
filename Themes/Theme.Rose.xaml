@@ -1,0 +1,14 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Color x:Key="GreenColor">#FFB0C8</Color>
+    <Color x:Key="DimGreenColor">#CC4470</Color>
+    <Color x:Key="TealAccentColor">#FF6B96</Color>
+    <Color x:Key="GlassBorderColor">#26FF6B96</Color>
+    <Color x:Key="BubbleBorderMineColor">#33FF6B96</Color>
+    <Color x:Key="BubbleBorderTheirsColor">#26FF6B96</Color>
+    <Color x:Key="AccentButtonFillColor">#1AFF6B96</Color>
+    <Color x:Key="AccentButtonHoverFillColor">#28FF6B96</Color>
+    <Color x:Key="AccentButtonBorderColor">#4DFF6B96</Color>
+    <Color x:Key="AccentButtonHoverBorderColor">#7AFF9AB8</Color>
+    <Color x:Key="ConversationSelectedColor">#B338101C</Color>
+</ResourceDictionary>

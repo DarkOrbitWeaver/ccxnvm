@@ -52,7 +52,8 @@ public partial class MainWindow {
         var startup = App.LastStartupHealth;
         var notes = new List<string> {
             $"data: {AppPaths.AppDataRoot}",
-            $"logs: {AppPaths.LogsDir}"
+            $"logs: {AppPaths.LogsDir}",
+            $"theme: {_activeThemeFile}"
         };
 
         if (startup.Errors.Count > 0) {
@@ -87,11 +88,17 @@ public partial class MainWindow {
 
     void BtnSettings_Click(object s, RoutedEventArgs e) {
         RefreshDiagnosticsSummary();
+        UpdateThemeButtonStates();
         SettingsOverlay.Visibility = Visibility.Visible;
     }
 
     void BtnCloseSettings_Click(object s, RoutedEventArgs e) =>
         SettingsOverlay.Visibility = Visibility.Collapsed;
+
+    void ThemeButton_Click(object s, RoutedEventArgs e) {
+        if (s is not System.Windows.Controls.Button { Tag: string themeFile }) return;
+        ApplyTheme(themeFile);
+    }
 
     void BtnCheckUpdates_Click(object s, RoutedEventArgs e) =>
         RunUiTask(() => CheckForUpdatesCoreAsync(interactive: true), "manual update check");

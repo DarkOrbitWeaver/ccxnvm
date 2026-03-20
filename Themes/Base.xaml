@@ -1,0 +1,428 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Color x:Key="BgColor">#070D16</Color>
+    <Color x:Key="PanelColor">#122033</Color>
+    <Color x:Key="SurfaceColor">#1A2D45</Color>
+    <Color x:Key="PanelAltColor">#142438</Color>
+    <Color x:Key="BorderColor">#34506E</Color>
+    <Color x:Key="AmberColor">#F6B15F</Color>
+    <Color x:Key="DimColor">#7C8B9F</Color>
+    <Color x:Key="RedColor">#FF6B6B</Color>
+    <Color x:Key="WhiteColor">#E6EDF5</Color>
+    <Color x:Key="MutedColor">#96A6BA</Color>
+    <Color x:Key="BlueColor">#7AA2FF</Color>
+    <Color x:Key="GoldAccentColor">#F2B55B</Color>
+    <Color x:Key="VioletAccentColor">#9E8CFF</Color>
+    <Color x:Key="GlassPanelColor">#880A1826</Color>
+    <Color x:Key="GlassOverlayColor">#CC0C1A2E</Color>
+    <Color x:Key="GlassInputBgColor">#770E2035</Color>
+    <Color x:Key="GlassInputFocusBgColor">#9914263B</Color>
+    <Color x:Key="BubbleMineColor">#B82A2444</Color>
+    <Color x:Key="BubbleTheirsColor">#A016333A</Color>
+    <Color x:Key="AmberDimColor">#E09A3C</Color>
+    <Color x:Key="AmberTextColor">#FFD8A6</Color>
+    <Color x:Key="TextGreenColor">#D8FFF5</Color>
+    <Color x:Key="DimNameColor">#B9C6D6</Color>
+    <Color x:Key="DimOnlineColor">#5E6F86</Color>
+    <Color x:Key="NameOnlineColor">#EEF5FF</Color>
+    <Color x:Key="SeenChipBgColor">#213042</Color>
+    <Color x:Key="MessageTextColor">#D8E8F4</Color>
+    <Color x:Key="TransparentColor">#00000000</Color>
+
+    <SolidColorBrush x:Key="Bg" Color="{StaticResource BgColor}" />
+    <SolidColorBrush x:Key="Panel" Color="{StaticResource PanelColor}" />
+    <SolidColorBrush x:Key="Surface" Color="{StaticResource SurfaceColor}" />
+    <SolidColorBrush x:Key="PanelAlt" Color="{StaticResource PanelAltColor}" />
+    <SolidColorBrush x:Key="Border" Color="{StaticResource BorderColor}" />
+    <SolidColorBrush x:Key="Amber" Color="{StaticResource AmberColor}" />
+    <SolidColorBrush x:Key="Dim" Color="{StaticResource DimColor}" />
+    <SolidColorBrush x:Key="Red" Color="{StaticResource RedColor}" />
+    <SolidColorBrush x:Key="White" Color="{StaticResource WhiteColor}" />
+    <SolidColorBrush x:Key="Muted" Color="{StaticResource MutedColor}" />
+    <SolidColorBrush x:Key="Blue" Color="{StaticResource BlueColor}" />
+    <SolidColorBrush x:Key="Green" Color="{DynamicResource GreenColor}" />
+    <SolidColorBrush x:Key="DimGreen" Color="{DynamicResource DimGreenColor}" />
+    <SolidColorBrush x:Key="TealAccent" Color="{DynamicResource TealAccentColor}" />
+    <SolidColorBrush x:Key="GlassBorder" Color="{DynamicResource GlassBorderColor}" />
+    <SolidColorBrush x:Key="BubbleBorderMine" Color="{DynamicResource BubbleBorderMineColor}" />
+    <SolidColorBrush x:Key="BubbleBorderTheirs" Color="{DynamicResource BubbleBorderTheirsColor}" />
+    <SolidColorBrush x:Key="AccentButtonFill" Color="{DynamicResource AccentButtonFillColor}" />
+    <SolidColorBrush x:Key="AccentButtonHoverFill" Color="{DynamicResource AccentButtonHoverFillColor}" />
+    <SolidColorBrush x:Key="AccentButtonBorder" Color="{DynamicResource AccentButtonBorderColor}" />
+    <SolidColorBrush x:Key="AccentButtonHoverBorder" Color="{DynamicResource AccentButtonHoverBorderColor}" />
+    <SolidColorBrush x:Key="ConversationSelected" Color="{DynamicResource ConversationSelectedColor}" />
+    <SolidColorBrush x:Key="GoldAccent" Color="{StaticResource GoldAccentColor}" />
+    <SolidColorBrush x:Key="VioletAccent" Color="{StaticResource VioletAccentColor}" />
+    <SolidColorBrush x:Key="GlassPanel" Color="{StaticResource GlassPanelColor}" />
+    <SolidColorBrush x:Key="GlassOverlay" Color="{StaticResource GlassOverlayColor}" />
+    <SolidColorBrush x:Key="GlassInputBg" Color="{StaticResource GlassInputBgColor}" />
+    <SolidColorBrush x:Key="GlassInputFocusBg" Color="{StaticResource GlassInputFocusBgColor}" />
+    <SolidColorBrush x:Key="BubbleMine" Color="{StaticResource BubbleMineColor}" />
+    <SolidColorBrush x:Key="BubbleTheirs" Color="{StaticResource BubbleTheirsColor}" />
+    <SolidColorBrush x:Key="AmberDim" Color="{StaticResource AmberDimColor}" />
+    <SolidColorBrush x:Key="AmberText" Color="{StaticResource AmberTextColor}" />
+    <SolidColorBrush x:Key="TextGreen" Color="{StaticResource TextGreenColor}" />
+    <SolidColorBrush x:Key="DimName" Color="{StaticResource DimNameColor}" />
+    <SolidColorBrush x:Key="DimOnline" Color="{StaticResource DimOnlineColor}" />
+    <SolidColorBrush x:Key="NameOnline" Color="{StaticResource NameOnlineColor}" />
+    <SolidColorBrush x:Key="SeenChipBg" Color="{StaticResource SeenChipBgColor}" />
+    <SolidColorBrush x:Key="MessageText" Color="{StaticResource MessageTextColor}" />
+    <SolidColorBrush x:Key="Transparent" Color="{StaticResource TransparentColor}" />
+
+    <LinearGradientBrush x:Key="AppBackgroundBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#04090F" Offset="0" />
+        <GradientStop Color="#080F1C" Offset="0.4" />
+        <GradientStop Color="#0E1C2E" Offset="0.75" />
+        <GradientStop Color="#060A14" Offset="1" />
+    </LinearGradientBrush>
+
+    <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI</FontFamily>
+    <FontFamily x:Key="DisplayFont">Segoe UI Variable Display, Segoe UI Semibold</FontFamily>
+    <FontFamily x:Key="ChatFont">Segoe UI Variable Text, Segoe UI Emoji, Segoe UI</FontFamily>
+    <FontFamily x:Key="Mono">Cascadia Mono, Consolas</FontFamily>
+    <FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+
+    <Style TargetType="ScrollBar">
+        <Setter Property="Background" Value="{StaticResource Bg}" />
+        <Setter Property="Width" Value="8" />
+        <Setter Property="MinWidth" Value="8" />
+    </Style>
+
+    <Style TargetType="ScrollViewer">
+        <Setter Property="Background" Value="Transparent" />
+    </Style>
+
+    <Style TargetType="TextBox" x:Key="TermInput">
+        <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
+        <Setter Property="Foreground" Value="{StaticResource White}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
+        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Padding" Value="12,9" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource DimGreen}" />
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Border x:Name="focusRing"
+                            Background="#00000000"
+                            BorderBrush="#00000000"
+                            BorderThickness="1"
+                            CornerRadius="11"
+                            SnapsToDevicePixels="True">
+                        <Border x:Name="bd"
+                                Margin="1"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="10"
+                                SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" />
+                        </Border>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="focusRing" Property="BorderBrush" Value="#3358D7B6" />
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="focusRing" Property="Opacity" Value="0.55" />
+                            <Setter TargetName="bd" Property="Opacity" Value="0.55" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="PasswordBox" x:Key="TermPasswordInput">
+        <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
+        <Setter Property="Foreground" Value="{StaticResource White}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
+        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Padding" Value="12,9" />
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="PasswordBox">
+                    <Border x:Name="focusRing"
+                            Background="#00000000"
+                            BorderBrush="#00000000"
+                            BorderThickness="1"
+                            CornerRadius="11"
+                            SnapsToDevicePixels="True">
+                        <Border x:Name="bd"
+                                Margin="1"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="10"
+                                SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" />
+                        </Border>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="focusRing" Property="BorderBrush" Value="#3358D7B6" />
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="focusRing" Property="Opacity" Value="0.55" />
+                            <Setter TargetName="bd" Property="Opacity" Value="0.55" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="BaseGlassButton" TargetType="Button">
+        <Setter Property="Foreground" Value="{StaticResource White}" />
+        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Padding" Value="12,7" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}"
+                            CornerRadius="12"
+                            SnapsToDevicePixels="True"
+                            RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform x:Name="buttonScale" ScaleX="1" ScaleY="1" />
+                        </Border.RenderTransform>
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard FillBehavior="HoldEnd">
+                                        <DoubleAnimation Storyboard.TargetName="bd"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                                         To="0.97"
+                                                         Duration="0:0:0.04" />
+                                        <DoubleAnimation Storyboard.TargetName="bd"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                                         To="0.97"
+                                                         Duration="0:0:0.04" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard FillBehavior="Stop">
+                                        <DoubleAnimation Storyboard.TargetName="bd"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                                         To="1"
+                                                         Duration="0:0:0.04" />
+                                        <DoubleAnimation Storyboard.TargetName="bd"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                                         To="1"
+                                                         Duration="0:0:0.04" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="bd" Property="Opacity" Value="0.4" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="Button" x:Key="TermBtn" BasedOn="{StaticResource BaseGlassButton}">
+        <Setter Property="Background" Value="#50162840" />
+        <Setter Property="Foreground" Value="{StaticResource Muted}" />
+        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#641D324C" />
+                <Setter Property="BorderBrush" Value="#55708CAD" />
+                <Setter Property="Foreground" Value="{StaticResource White}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="Button" x:Key="AccentBtn" BasedOn="{StaticResource BaseGlassButton}">
+        <Setter Property="Background" Value="{DynamicResource AccentButtonFill}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource AccentButtonBorder}" />
+        <Setter Property="Foreground" Value="{DynamicResource Green}" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource AccentButtonHoverFill}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource AccentButtonHoverBorder}" />
+                <Setter Property="Foreground" Value="{DynamicResource Green}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="Button" x:Key="GroupBtn" BasedOn="{StaticResource BaseGlassButton}">
+        <Setter Property="Background" Value="#1AF2B55B" />
+        <Setter Property="BorderBrush" Value="#4DF2B55B" />
+        <Setter Property="Foreground" Value="{StaticResource Amber}" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#26F2B55B" />
+                <Setter Property="BorderBrush" Value="#6EF6C57A" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="Button" x:Key="InfoBtn" BasedOn="{StaticResource BaseGlassButton}">
+        <Setter Property="Background" Value="#1A9E8CFF" />
+        <Setter Property="BorderBrush" Value="#409E8CFF" />
+        <Setter Property="Foreground" Value="{StaticResource VioletAccent}" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#269E8CFF" />
+                <Setter Property="BorderBrush" Value="#66B4A6FF" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="Button" x:Key="NukeBtn" BasedOn="{StaticResource BaseGlassButton}">
+        <Setter Property="Background" Value="#801D1114" />
+        <Setter Property="BorderBrush" Value="#99693139" />
+        <Setter Property="Foreground" Value="{StaticResource Red}" />
+        <Setter Property="Padding" Value="12,6" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#9632171C" />
+                <Setter Property="BorderBrush" Value="#CC8A4250" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="Button" x:Key="ThemeSwatchBtn" BasedOn="{StaticResource BaseGlassButton}">
+        <Setter Property="Width" Value="36" />
+        <Setter Property="Height" Value="36" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="BorderBrush" Value="#30425570" />
+        <Setter Property="Foreground" Value="{StaticResource White}" />
+        <Setter Property="FontWeight" Value="Bold" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="12"
+                            SnapsToDevicePixels="True"
+                            RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform x:Name="themeSwatchScale" ScaleX="1" ScaleY="1" />
+                        </Border.RenderTransform>
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource White}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard FillBehavior="HoldEnd">
+                                        <DoubleAnimation Storyboard.TargetName="bd"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                                         To="0.97"
+                                                         Duration="0:0:0.04" />
+                                        <DoubleAnimation Storyboard.TargetName="bd"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                                         To="0.97"
+                                                         Duration="0:0:0.04" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard FillBehavior="Stop">
+                                        <DoubleAnimation Storyboard.TargetName="bd"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                                         To="1"
+                                                         Duration="0:0:0.04" />
+                                        <DoubleAnimation Storyboard.TargetName="bd"
+                                                         Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                                         To="1"
+                                                         Duration="0:0:0.04" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="bd" Property="Opacity" Value="0.4" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ListBox" x:Key="TermList">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{StaticResource White}" />
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
+        <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
+        <Setter Property="VirtualizingPanel.ScrollUnit" Value="Pixel" />
+        <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+        <Setter Property="ItemContainerStyle">
+            <Setter.Value>
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="Padding" Value="10,8" />
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ListBoxItem">
+                                <Border x:Name="bd"
+                                        Background="{TemplateBinding Background}"
+                                        BorderThickness="0"
+                                        Padding="{TemplateBinding Padding}"
+                                        CornerRadius="12"
+                                        Margin="6,2">
+                                    <ContentPresenter />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="bd" Property="Background" Value="#132332" />
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="bd" Property="Background" Value="{DynamicResource ConversationSelected}" />
+                                        <Setter TargetName="bd" Property="BorderThickness" Value="1" />
+                                        <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>
