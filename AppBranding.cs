@@ -6,6 +6,7 @@ public static class AppBranding {
     static readonly Assembly Assembly = typeof(AppBranding).Assembly;
 
     public const string DefaultRelayUrl = "https://cipher-relay.onrender.com";
+    public const string GitHubRepoUrl = "https://github.com/DarkOrbitWeaver/ccxnvm";
 
     public static string ProductName =>
         Assembly.GetCustomAttribute<AssemblyProductAttribute>()?.Product ?? "Cipher";

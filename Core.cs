@@ -376,7 +376,7 @@ public static class Crypto {
 // ═══════════════════════════════════════════════════════════════════════════
 //  VAULT MANAGER — Encrypted SQLite. All sensitive fields AES-256-GCM encrypted.
 // ═══════════════════════════════════════════════════════════════════════════
-public class Vault : IDisposable {
+public partial class Vault : IDisposable {
     SqliteConnection? _db;
     byte[] _key = [];
     string _path = "";
@@ -399,9 +399,20 @@ public class Vault : IDisposable {
         _key = vaultKey.ToArray();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         _db = new SqliteConnection($"Data Source={path};");
-        _db.Open();
-        InitSchema();
-        IsOpen = true;
+        try {
+            _db.Open();
+            ConfigureConnection();
+            InitSchema();
+            RunStartupMaintenance();
+            IsOpen = true;
+        } catch {
+            _db?.Dispose();
+            _db = null;
+            IsOpen = false;
+            Crypto.Wipe(_key);
+            _key = [];
+            throw;
+        }
     }
 
     void InitSchema() {
@@ -881,7 +892,10 @@ public static class Session {
             return System.Security.Cryptography.ProtectedData.Unprotect(
                 encrypted, null,
                 System.Security.Cryptography.DataProtectionScope.CurrentUser);
-        } catch { return null; }
+        } catch (Exception ex) {
+            AppLog.Warn("session", $"saved session could not be restored: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>Clear the saved session (called on logout and nuke).</summary>
@@ -997,6 +1011,7 @@ public class NetworkClient : IAsyncDisposable {
             await _hub!.InvokeAsync("Send", recipientId, payload, sig, seqNum);
             return true;
         } catch (Exception ex) {
+            AppLog.Warn("relay", $"direct send failed: {ex.Message}");
             OnError?.Invoke(ex.Message);
             return false;
         }
@@ -1010,6 +1025,7 @@ public class NetworkClient : IAsyncDisposable {
             await _hub!.InvokeAsync("SendGroup", groupId, recipientIds, payload, sig, seqNum);
             return true;
         } catch (Exception ex) {
+            AppLog.Warn("relay", $"group send failed: {ex.Message}");
             OnError?.Invoke(ex.Message);
             return false;
         }
@@ -1023,7 +1039,10 @@ public class NetworkClient : IAsyncDisposable {
             if (result == null) return null;
             return (Convert.FromBase64String(result.SignPubKey),
                     Convert.FromBase64String(result.DhPubKey));
-        } catch { return null; }
+        } catch (Exception ex) {
+            AppLog.Warn("relay", $"key lookup failed for {userId}: {ex.Message}");
+            return null;
+        }
     }
 
     public async Task<bool> AckDmAsync(string senderId, long seqNum) {
@@ -1031,7 +1050,8 @@ public class NetworkClient : IAsyncDisposable {
         try {
             await _hub!.InvokeAsync("AckDirect", senderId, seqNum);
             return true;
-        } catch {
+        } catch (Exception ex) {
+            AppLog.Warn("relay", $"direct ack failed for {senderId}:{seqNum}: {ex.Message}");
             return false;
         }
     }
@@ -1041,7 +1061,8 @@ public class NetworkClient : IAsyncDisposable {
         try {
             await _hub!.InvokeAsync("AckGroup", groupId, senderId, seqNum);
             return true;
-        } catch {
+        } catch (Exception ex) {
+            AppLog.Warn("relay", $"group ack failed for {groupId}/{senderId}:{seqNum}: {ex.Message}");
             return false;
         }
     }
@@ -1050,7 +1071,9 @@ public class NetworkClient : IAsyncDisposable {
     public async Task AnnouncePresenceAsync(List<string> contactIds) {
         if (!IsConnected || contactIds.Count == 0) return;
         try { await _hub!.InvokeAsync("AnnouncePresence", contactIds); }
-        catch { }
+        catch (Exception ex) {
+            AppLog.Warn("relay", $"presence announcement failed: {ex.Message}");
+        }
     }
 
     async Task EnsureConnectedAsync(bool fromRetryLoop, CancellationToken cancellationToken) {
@@ -1068,8 +1091,9 @@ public class NetworkClient : IAsyncDisposable {
             RaiseState(RelayConnectionState.Connected, "relay connected");
             OnConnected?.Invoke();
         } catch (OperationCanceledException) {
-        } catch (Exception) {
+        } catch (Exception ex) {
             if (_disposed || _lifetimeCts.IsCancellationRequested) return;
+            AppLog.Warn("relay", $"connection attempt failed: {ex.Message}");
             if (!fromRetryLoop) {
                 OnError?.Invoke("relay unavailable or waking up - retrying in background...");
             }
@@ -1125,13 +1149,15 @@ public class NetworkClient : IAsyncDisposable {
                         throw new TimeoutException("Relay heartbeat timed out.");
                     }
                     await pingTask;
-                } catch {
+                } catch (Exception ex) {
                     if (_hub.State != HubConnectionState.Connected) continue;
+                    AppLog.Warn("relay", $"heartbeat failed: {ex.Message}");
                     RaiseState(RelayConnectionState.Reconnecting, "relay unreachable - retrying...");
                     OnDisconnected?.Invoke();
                     try {
                         await _hub.StopAsync(_lifetimeCts.Token);
-                    } catch {
+                    } catch (Exception stopEx) {
+                        AppLog.Warn("relay", $"hub stop after heartbeat failure also failed: {stopEx.Message}");
                     }
                     EnsureRetryLoop();
                 }

@@ -1,4 +1,5 @@
 using Cipher;
+using Microsoft.Data.Sqlite;
 using System.Security.Cryptography;
 
 namespace Cipher.Tests;
@@ -84,6 +85,42 @@ public class PersistenceTests {
         Assert.Equal(ConversationType.Group, queued[0].ConvType);
         Assert.Equal("group-1", queued[0].GroupId);
         Assert.Equal(members, queued[0].MemberIds);
+    }
+
+    [Fact]
+    public void OpeningVaultRepairsInvalidOutboxRowsAndCreatesBackup() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            vault.SaveMessage(new Message {
+                Id = "seed-msg",
+                ConversationId = "dm:a:b",
+                SenderId = "a",
+                Content = "seed",
+                Timestamp = 1,
+                SeqNum = 1
+            });
+        }
+
+        using (var raw = new SqliteConnection($"Data Source={vaultPath};")) {
+            raw.Open();
+            using var cmd = raw.CreateCommand();
+            cmd.CommandText = @"
+                INSERT INTO outbox(id, recipient_id, payload, sig, seq_num, conv_type, created_at, attempts)
+                VALUES ('broken-1', '', '', '', 0, 0, 1, 0)";
+            cmd.ExecuteNonQuery();
+        }
+
+        using var reopened = new Vault();
+        reopened.Open(vaultPath, key);
+
+        Assert.Empty(reopened.LoadOutbox());
+        Assert.NotNull(reopened.LastMaintenanceBackupPath);
+        Assert.True(File.Exists(reopened.LastMaintenanceBackupPath!));
+        Assert.Contains(reopened.LastMaintenanceActions, action => action.Contains("startup repair", StringComparison.OrdinalIgnoreCase));
     }
 
     static Contact CreateContact() {

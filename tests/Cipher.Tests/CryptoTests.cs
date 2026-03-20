@@ -1,5 +1,6 @@
 using Cipher;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace Cipher.Tests;
 
@@ -46,8 +47,10 @@ public class CryptoTests {
 
         var shortPayload = Crypto.EncryptDm(key, shortMsg);
         var longerPayload = Crypto.EncryptDm(key, longerMsg);
+        var shortCtLength = JsonDocument.Parse(shortPayload).RootElement.GetProperty("ct").GetString()!.Length;
+        var longerCtLength = JsonDocument.Parse(longerPayload).RootElement.GetProperty("ct").GetString()!.Length;
 
-        Assert.Equal(shortPayload.Length, longerPayload.Length);
+        Assert.Equal(shortCtLength, longerCtLength);
         Assert.Equal("a", Crypto.DecryptDm(key, "bob", shortPayload)!.Content);
         Assert.Equal(new string('b', 120), Crypto.DecryptDm(key, "bob", longerPayload)!.Content);
     }

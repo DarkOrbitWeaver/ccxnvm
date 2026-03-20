@@ -160,6 +160,7 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <!-- Status dot + app name -->
@@ -218,9 +219,19 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Text="CONVERSATIONS"
-                               FontSize="9" Foreground="#444444"
-                               Margin="8,8,0,0"/>
+                    <Grid Grid.Row="0" Margin="8,4,8,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="CONVERSATIONS"
+                                   FontSize="9" Foreground="#444444"
+                                   VerticalAlignment="Center"/>
+                        <Button x:Name="BtnSettings" Grid.Column="1" Content="[SYS]"
+                                Style="{StaticResource TermBtn}" FontSize="9"
+                                Padding="6,2" Click="BtnSettings_Click"
+                                ToolTip="Version, updates, logs, and diagnostics"/>
+                    </Grid>
 
                     <!-- Virtualized contact/group list -->
                     <ListBox x:Name="ConvList" Grid.Row="1"
@@ -505,6 +516,56 @@
         <!-- ════════════════════════════════════════════════════ -->
         <!--  NUKE CONFIRMATION OVERLAY                           -->
         <!-- ════════════════════════════════════════════════════ -->
+        <Grid x:Name="SettingsOverlay" Visibility="Collapsed" Panel.ZIndex="25"
+              Background="#CC000000">
+            <Border Background="#111111" BorderBrush="#1F1F1F" BorderThickness="1"
+                    Width="430" VerticalAlignment="Center" HorizontalAlignment="Center"
+                    Padding="20">
+                <StackPanel>
+                    <TextBlock Text="SYSTEM STATUS" FontSize="14" FontWeight="Bold"
+                               Foreground="#00FF41" Margin="0,0,0,16"/>
+
+                    <TextBlock FontSize="10" Foreground="#555555">> version</TextBlock>
+                    <TextBlock x:Name="SettingsVersionText" FontSize="11" Foreground="#00FF41"
+                               Margin="0,2,0,12"/>
+
+                    <TextBlock FontSize="10" Foreground="#555555">> update status</TextBlock>
+                    <TextBlock x:Name="SettingsUpdateStatusText" FontSize="10" Foreground="#CCCCCC"
+                               TextWrapping="Wrap" Margin="0,2,0,6"/>
+                    <ProgressBar x:Name="UpdateProgressBar" Height="6" Minimum="0" Maximum="100"
+                                 Margin="0,0,0,12" Visibility="Collapsed"/>
+
+                    <TextBlock FontSize="10" Foreground="#555555">> diagnostics</TextBlock>
+                    <TextBlock x:Name="SettingsDiagText" FontSize="9" Foreground="#444444"
+                               TextWrapping="Wrap" Margin="0,2,0,16"/>
+
+                    <UniformGrid Columns="2" Margin="0,0,0,12">
+                        <Button x:Name="BtnCheckUpdates" Content="[ CHECK UPDATES ]"
+                                Style="{StaticResource TermBtn}" Margin="0,0,8,8"
+                                Click="BtnCheckUpdates_Click"/>
+                        <Button x:Name="BtnRestartToUpdate" Content="[ RESTART TO UPDATE ]"
+                                Style="{StaticResource TermBtn}" Margin="0,0,0,8"
+                                Click="BtnRestartToUpdate_Click" Visibility="Collapsed"/>
+                        <Button Content="[ OPEN LOGS ]" Style="{StaticResource TermBtn}"
+                                Margin="0,0,8,0" Click="BtnOpenLogs_Click"/>
+                        <Button Content="[ OPEN DATA ]" Style="{StaticResource TermBtn}"
+                                Click="BtnOpenData_Click"/>
+                    </UniformGrid>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Content="[ EXPORT DIAGNOSTICS ]" Style="{StaticResource TermBtn}"
+                                Click="BtnExportDiagnostics_Click"/>
+                        <Button Grid.Column="1" Content="[X]" Style="{StaticResource TermBtn}"
+                                Margin="8,0,0,0" Click="BtnCloseSettings_Click"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Grid>
+
         <Grid x:Name="NukeOverlay" Visibility="Collapsed" Panel.ZIndex="30"
               Background="#DD000000">
             <Border Background="#0A0000" BorderBrush="#441111" BorderThickness="1"

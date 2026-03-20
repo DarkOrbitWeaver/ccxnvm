@@ -54,6 +54,7 @@ $readme = @(
     "- session.bin",
     "",
     "Tips:",
+    "- This portable build does not include installer-based auto-updates. Use publish-release.ps1 for GitHub Releases + Velopack updates.",
     "- Back up %APPDATA%\$productName\ if you want to keep the account and chat history.",
     "- Deleting the exe does not delete the vault.",
     "- The built-in NUKE action destroys the local vault data."

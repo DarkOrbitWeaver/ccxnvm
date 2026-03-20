@@ -147,16 +147,19 @@ public partial class MainWindow : Window {
     // Reconnect outbox flush timer
     DispatcherTimer? _outboxTimer;
     bool _networkEventsWired;
+    bool _flushingOutbox;
 
     // ── Init ──────────────────────────────────────────────────────────────
 
     public MainWindow() {
         InitializeComponent();
+        AppLog.Info("ui", "main window initialized");
         ApplyBranding();
         MessageList.ItemsSource = _messages;
         ConvList.ItemsSource = _convs;
         LoginRememberSession.IsChecked = Session.HasSession();
         RegisterRememberSession.IsChecked = false;
+        InitializeReleaseFeatures();
 
         // Hook scroll event for lazy loading (set after list renders)
         MessageList.Loaded += (_, _) => {
@@ -167,11 +170,17 @@ public partial class MainWindow : Window {
 
         // Outbox retry timer: every 5 seconds try to flush pending messages
         _outboxTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-        _outboxTimer.Tick += async (_, _) => await FlushOutboxAsync();
+        _outboxTimer.Tick += (_, _) => RunUiTask(FlushOutboxAsync, "flush outbox", showSidebarErrors: false);
         _outboxTimer.Start();
 
         // Try auto-login if session saved
-        Loaded += async (_, _) => await TryAutoLoginAsync();
+        Loaded += (_, _) => RunUiTask(TryAutoLoginAsync, "startup auto-login", showSidebarErrors: false);
+
+        if (!App.LastStartupHealth.IsHealthy) {
+            SetAuthStatus(App.LastStartupHealth.Errors[0], true);
+        } else if (App.LastStartupHealth.Warnings.Count > 0) {
+            SetAuthStatus(App.LastStartupHealth.Warnings[0], false);
+        }
     }
 
     void ApplyBranding() {
@@ -202,13 +211,17 @@ public partial class MainWindow : Window {
                 _user = _vault.LoadIdentity();
                 if (_user != null) {
                     LoginServerUrl.Text = _user.ServerUrl;
+                    ReportVaultMaintenance();
                     await StartChatAsync();
                     return;
                 }
-            } catch {
+            } catch (Exception ex) {
+                AppLog.Warn("auth", $"auto-login failed: {ex.Message}");
                 Session.Clear();
                 _vault.Dispose();
                 _vault = new Vault();
+            } finally {
+                Crypto.Wipe(sessionKey);
             }
         }
 
@@ -245,7 +258,13 @@ public partial class MainWindow : Window {
         if (e.Key == Key.Enter) BtnLogin_Click(s, e);
     }
 
-    async void BtnLogin_Click(object s, RoutedEventArgs e) {
+    void BtnLogin_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(LoginAsync, "unlock vault", showSidebarErrors: false, onError: message => {
+            SetAuthStatus(message, true);
+            BtnLogin.IsEnabled = true;
+        });
+
+    async Task LoginAsync() {
         var pass = LoginPass.Password;
         var serverUrl = RelayUrl.Normalize(LoginServerUrl.Text);
         if (string.IsNullOrEmpty(pass)) { SetAuthStatus("enter password", true); return; }
@@ -276,16 +295,24 @@ public partial class MainWindow : Window {
 
             if (LoginRememberSession.IsChecked == true) Session.Save(key);
             else Session.Clear();
+            ReportVaultMaintenance();
             await StartChatAsync();
         } catch (Exception ex) {
+            AppLog.Error("auth", "vault unlock failed", ex);
             _vault.Dispose();
             _vault = new Vault();
-            SetAuthStatus($"error: {ex.Message}", true);
+            SetAuthStatus(FriendlyErrors.ToUserMessage(ex), true);
             BtnLogin.IsEnabled = true;
         }
     }
 
-    async void BtnRegister_Click(object s, RoutedEventArgs e) {
+    void BtnRegister_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(RegisterAsync, "create vault", showSidebarErrors: false, onError: message => {
+            SetAuthStatus(message, true);
+            BtnRegister.IsEnabled = true;
+        });
+
+    async Task RegisterAsync() {
         var name = RegName.Text.Trim();
         var pass = RegPass.Password;
         var pass2 = RegPass2.Password;
@@ -331,9 +358,11 @@ public partial class MainWindow : Window {
 
             if (RegisterRememberSession.IsChecked == true) Session.Save(key);
             else Session.Clear();
+            ReportVaultMaintenance();
             await StartChatAsync();
         } catch (Exception ex) {
-            SetAuthStatus($"error: {ex.Message}", true);
+            AppLog.Error("auth", "vault creation failed", ex);
+            SetAuthStatus(FriendlyErrors.ToUserMessage(ex), true);
             BtnRegister.IsEnabled = true;
         }
     }
@@ -349,6 +378,7 @@ public partial class MainWindow : Window {
     // ── Start chat ────────────────────────────────────────────────────────
 
     async Task StartChatAsync() {
+        AppLog.Info("chat", $"starting session for {_user!.UserId}");
         AuthPanel.Visibility = Visibility.Collapsed;
         ChatPanel.Visibility = Visibility.Visible;
 
@@ -396,17 +426,19 @@ public partial class MainWindow : Window {
             ApplyConnectionState(state, detail));
 
         _net.OnConnected += () => Dispatcher.InvokeAsync(() => {
+            AppLog.Info("relay", "connected");
             // Announce presence to all contacts
             var ids = _convs.Where(c => !c.IsGroup).Select(c => c.ContactData!.UserId).ToList();
             _ = _net.AnnouncePresenceAsync(ids);
             foreach (var contact in _convs.Where(c => !c.IsGroup)
                                           .Select(c => c.ContactData!)
                                           .Where(c => c.SignPubKey.Length == 0 || c.DhPubKey.Length == 0))
-                _ = EnsureContactKeysAsync(contact);
-            _ = FlushOutboxAsync();
+                RunUiTask(async () => { await EnsureContactKeysAsync(contact); }, "refresh contact keys", showSidebarErrors: false);
+            RunUiTask(FlushOutboxAsync, "flush outbox", showSidebarErrors: false);
         });
 
         _net.OnDisconnected += () => Dispatcher.InvokeAsync(() => {
+            AppLog.Warn("relay", "disconnected");
             foreach (var c in _convs.Where(c => !c.IsGroup))
                 c.IsOnline = false;
         });
@@ -415,17 +447,20 @@ public partial class MainWindow : Window {
             var conv = _convs.FirstOrDefault(c => c.ContactData?.UserId == uid);
             if (conv?.ContactData is { } contact) {
                 conv.IsOnline = true;
-                _ = EnsureContactKeysAsync(contact);
+                RunUiTask(async () => { await EnsureContactKeysAsync(contact); }, "refresh contact keys", showSidebarErrors: false);
             }
         });
 
         _net.OnMessage += (senderId, payload, sig, seq, ts) =>
-            RunUiTask(() => HandleIncomingDmAsync(senderId, payload, sig, seq, ts));
+            RunUiTask(() => HandleIncomingDmAsync(senderId, payload, sig, seq, ts),
+                "handle direct message");
 
         _net.OnGroupMessage += (groupId, senderId, payload, sig, seq, ts) =>
-            RunUiTask(() => HandleIncomingGroupAsync(groupId, senderId, payload, sig, seq, ts));
+            RunUiTask(() => HandleIncomingGroupAsync(groupId, senderId, payload, sig, seq, ts),
+                "handle group message");
 
         _net.OnError += msg => Dispatcher.InvokeAsync(() => {
+            AppLog.Warn("relay", msg);
             if (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text))
                 SidebarStatus.Text = $"! {msg}";
         });
@@ -472,11 +507,19 @@ public partial class MainWindow : Window {
         text.StartsWith("relay ", StringComparison.OrdinalIgnoreCase) ||
         text.StartsWith("! relay ", StringComparison.OrdinalIgnoreCase);
 
-    void RunUiTask(Func<Task> work) {
-        _ = Dispatcher.InvokeAsync(work).Task.Unwrap().ContinueWith(t => {
-            var message = t.Exception?.GetBaseException().Message ?? "unexpected UI task error";
-            Dispatcher.Invoke(() => SidebarStatus.Text = $"! {message}");
-        }, TaskContinuationOptions.OnlyOnFaulted);
+    void RunUiTask(Func<Task> work, string operation,
+        bool showSidebarErrors = true, Action<string>? onError = null) {
+        _ = Dispatcher.InvokeAsync(async () => {
+            try {
+                await work();
+            } catch (OperationCanceledException) {
+            } catch (Exception ex) {
+                AppLog.Error("ui", $"{operation} failed", ex);
+                var message = FriendlyErrors.ToUserMessage(ex);
+                if (onError != null) onError(message);
+                else if (showSidebarErrors) SidebarStatus.Text = $"! {message}";
+            }
+        }).Task;
     }
 
     // ── Incoming message handlers ─────────────────────────────────────────
@@ -653,7 +696,10 @@ public partial class MainWindow : Window {
     /// Scroll changed handler — triggers history load when user scrolls to top.
     /// Carefully preserves scroll position so the view doesn't jump.
     /// </summary>
-    async void OnScrollChanged(object s, ScrollChangedEventArgs e) {
+    void OnScrollChanged(object s, ScrollChangedEventArgs e) =>
+        RunUiTask(() => HandleScrollChangedAsync(e), "load older messages", showSidebarErrors: false);
+
+    async Task HandleScrollChangedAsync(ScrollChangedEventArgs e) {
         // Track whether user is near bottom (for auto-scroll on new messages)
         _isNearBottom = _msgScrollViewer != null &&
             _msgScrollViewer.VerticalOffset >= _msgScrollViewer.ScrollableHeight - 80;
@@ -726,7 +772,7 @@ public partial class MainWindow : Window {
         if (e.Key == Key.Enter && !Keyboard.IsKeyDown(Key.LeftShift) &&
             !Keyboard.IsKeyDown(Key.RightShift)) {
             e.Handled = true;
-            _ = SendMessageAsync();
+            RunUiTask(SendMessageAsync, "send message");
         }
     }
 
@@ -735,7 +781,8 @@ public partial class MainWindow : Window {
         // Could send typing signal to server here — omitted to keep server stateless
     }
 
-    void BtnSend_Click(object s, RoutedEventArgs e) => _ = SendMessageAsync();
+    void BtnSend_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(SendMessageAsync, "send message");
 
     async Task SendMessageAsync() {
         var text = InputBox.Text.Trim();
@@ -813,24 +860,29 @@ public partial class MainWindow : Window {
     // ── Outbox flush (resend failed/offline messages) ──────────────────────
 
     async Task FlushOutboxAsync() {
-        if (!_net.IsConnected) return;
-        var pending = _vault.LoadOutbox();
-        foreach (var item in pending) {
-            bool sent;
-            if (item.ConvType == ConversationType.Group && item.MemberIds != null)
-                sent = await _net.SendGroupAsync(item.GroupId!, item.MemberIds, item.Payload, item.Sig, item.SeqNum);
-            else
-                sent = await _net.SendDmAsync(item.RecipientId, item.Payload, item.Sig, item.SeqNum);
+        if (!_net.IsConnected || _flushingOutbox) return;
 
-            if (sent) {
-                _vault.RemoveOutbox(item.Id);
-                _vault.UpdateMessageStatus(item.Id, MessageStatus.Sent);
-                // Update VM if visible
-                var vm = _messages.FirstOrDefault(m => m.Id == item.Id);
-                if (vm != null) vm.Status = MessageStatus.Sent;
-            } else {
-                _vault.IncrementOutboxAttempts(item.Id);
+        _flushingOutbox = true;
+        try {
+            var pending = _vault.LoadOutbox();
+            foreach (var item in pending) {
+                bool sent;
+                if (item.ConvType == ConversationType.Group && item.MemberIds != null)
+                    sent = await _net.SendGroupAsync(item.GroupId!, item.MemberIds, item.Payload, item.Sig, item.SeqNum);
+                else
+                    sent = await _net.SendDmAsync(item.RecipientId, item.Payload, item.Sig, item.SeqNum);
+
+                if (sent) {
+                    _vault.RemoveOutbox(item.Id);
+                    _vault.UpdateMessageStatus(item.Id, MessageStatus.Sent);
+                    var vm = _messages.FirstOrDefault(m => m.Id == item.Id);
+                    if (vm != null) vm.Status = MessageStatus.Sent;
+                } else {
+                    _vault.IncrementOutboxAttempts(item.Id);
+                }
             }
+        } finally {
+            _flushingOutbox = false;
         }
     }
 
@@ -1089,7 +1141,10 @@ public partial class MainWindow : Window {
     void BtnCloseOverlay_Click(object s, RoutedEventArgs e) =>
         AddOverlay.Visibility = Visibility.Collapsed;
 
-    async void BtnConfirmAdd_Click(object s, RoutedEventArgs e) {
+    void BtnConfirmAdd_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(AddContactAsync, "add contact", showSidebarErrors: false, onError: message => ShowAddStatus(message));
+
+    async Task AddContactAsync() {
         var uid = AddContactId.Text.Trim();
         var name = AddContactName.Text.Trim();
 
@@ -1135,7 +1190,10 @@ public partial class MainWindow : Window {
         ConvList.SelectedItem = conv;
     }
 
-    async void BtnCreateGroup_Click(object s, RoutedEventArgs e) {
+    void BtnCreateGroup_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(CreateGroupAsync, "create group", showSidebarErrors: false, onError: message => ShowAddStatus(message));
+
+    async Task CreateGroupAsync() {
         var name = NewGroupName.Text.Trim();
         if (string.IsNullOrEmpty(name)) { ShowAddStatus("enter a group name"); return; }
 
@@ -1193,7 +1251,10 @@ public partial class MainWindow : Window {
         t.Start();
     }
 
-    async void BtnSecurityReview_Click(object s, RoutedEventArgs e) {
+    void BtnSecurityReview_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(SecurityReviewAsync, "review contact security", showSidebarErrors: false);
+
+    async Task SecurityReviewAsync() {
         if (_activeConv?.ContactData is not Contact contact || _user == null) return;
 
         if (contact.SignPubKey.Length == 0 || contact.DhPubKey.Length == 0) {
@@ -1264,7 +1325,10 @@ public partial class MainWindow : Window {
     void BtnCancelNuke_Click(object s, RoutedEventArgs e) =>
         NukeOverlay.Visibility = Visibility.Collapsed;
 
-    async void BtnConfirmNuke_Click(object s, RoutedEventArgs e) {
+    void BtnConfirmNuke_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(ConfirmNukeAsync, "nuke vault", showSidebarErrors: false);
+
+    async Task ConfirmNukeAsync() {
         if (NukeConfirm.Text != "NUKE") {
             NukeConfirm.BorderBrush = (Brush)FindResource("Red");
             return;
@@ -1290,7 +1354,9 @@ public partial class MainWindow : Window {
                         var sig = Crypto.SignPayload(_user.SignPrivKey, payload, msg.SeqNum);
                         await _net.SendDmAsync(contact.UserId, payload, sig, msg.SeqNum);
                     }
-                } catch { }
+                } catch (Exception ex) {
+                    AppLog.Warn("nuke", $"failed to notify {contact.DisplayName}: {ex.Message}");
+                }
             }
         }
 
@@ -1341,11 +1407,17 @@ public partial class MainWindow : Window {
 
     // ── Cleanup on close ──────────────────────────────────────────────────
 
-    protected override async void OnClosed(EventArgs e) {
+    protected override void OnClosed(EventArgs e) {
+        _uiLifetimeCts.Cancel();
         _outboxTimer?.Stop();
-        await _net.DisposeAsync();
+        try {
+            _net.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        } catch (Exception ex) {
+            AppLog.Warn("shutdown", $"network cleanup failed: {ex.Message}");
+        }
         foreach (var key in _convKeys.Values) Crypto.Wipe(key);
         _vault.Dispose();
+        AppLog.Info("shutdown", "window closed");
         base.OnClosed(e);
     }
 }

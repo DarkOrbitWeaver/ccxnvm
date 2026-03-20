@@ -2,6 +2,8 @@
 bin/
 obj/
 .publish/
+.releases/
+.tools/
 server/bin/
 server/obj/
 server/out/

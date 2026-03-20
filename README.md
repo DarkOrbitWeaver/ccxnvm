@@ -97,7 +97,40 @@ The script also creates:
 - `.publish\Cipher-win-x64.zip` for easier sharing
 - `.publish\win-x64\README.txt` with run + data-location notes for your friend
 
-You do not need an installer for basic sharing. Your friend can unzip the package and run the `.exe` from any normal folder. The encrypted vault and session files are stored separately in `%APPDATA%\Cipher`, not beside the executable.
+This portable build is still useful for quick sharing, but it does not include installer-based auto-updates. Your friend can unzip the package and run the `.exe` from any normal folder. The encrypted vault and session files are stored separately in `%APPDATA%\Cipher`, not beside the executable.
+
+## Release packaging
+
+For the real release flow with installer + in-app updates, run:
+
+```powershell
+.\publish-release.ps1
+```
+
+That produces:
+
+- `.publish\win-x64-release` with the unpacked release build
+- `.releases\stable` with the Velopack installer, packages, and update metadata
+
+Upload the contents of `.releases\stable` to a GitHub Release on this repo. Once your friend installs that packaged build, the app can check GitHub Releases in the background and apply downloaded updates after a manual restart.
+
+## Diagnostics and recovery
+
+The app now keeps local operational data under `%APPDATA%\Cipher\`:
+
+- `vault.db`, `vault.salt`, `session.bin`
+- `logs\` for rolling diagnostics logs
+- `backups\` for automatic pre-repair / pre-migration / pre-update vault backups
+- `exports\` for diagnostics bundles created from the in-app system panel
+
+Additional hardening now in the desktop client:
+
+- startup health checks for writable app-data, session readability, default relay URL, and vault `quick_check`
+- rolling local logs for startup, reconnects, updater activity, and unexpected exceptions
+- automatic vault backup before schema repair, migration, or update handoff
+- repair of invalid outbox rows and missing conversation state on open
+- bounded outbox flush so reconnect retries do not overlap
+- system panel in the client for version, update status, logs, data folder, and diagnostics export
 
 ## Important limitations
 

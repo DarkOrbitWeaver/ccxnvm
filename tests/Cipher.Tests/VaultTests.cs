@@ -86,6 +86,29 @@ public class VaultTests {
         Assert.Equal(12, queued[0].SeqNum);
     }
 
+    [Fact]
+    public void MaintenanceBackupCreatesPortableVaultCopy() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using var vault = new Vault();
+        vault.Open(vaultPath, key);
+        vault.SaveMessage(new Message {
+            Id = "msg-1",
+            ConversationId = "dm:a:b",
+            SenderId = "a",
+            Content = "hello",
+            Timestamp = 1,
+            SeqNum = 1
+        });
+
+        var backupPath = vault.CreateMaintenanceBackup("unit-test");
+
+        Assert.True(File.Exists(backupPath));
+        Assert.False(string.IsNullOrWhiteSpace(vault.LastMaintenanceBackupPath));
+    }
+
     static LocalUser CreateUser(string serverUrl, string displayName) {
         var (signPriv, signPub) = Crypto.GenerateSigningKeys();
         var (dhPriv, dhPub) = Crypto.GenerateDhKeys();
