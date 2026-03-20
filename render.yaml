@@ -1,6 +1,7 @@
 services:
   - type: web
     name: cipher-relay
+    region: frankfurt
     runtime: docker
     plan: free
     dockerfilePath: server/Dockerfile
