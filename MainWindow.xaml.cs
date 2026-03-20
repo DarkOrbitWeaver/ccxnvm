@@ -150,11 +150,25 @@ public sealed class SeenByChipViewModel {
     public Brush Color { get; init; } = B.Dim;
 }
 
-record GroupInvitePayload(string GroupId, string Name, string GroupKey, List<string> MemberIds);
+sealed class GroupInvitePayload {
+    public string GroupId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string GroupKey { get; set; } = "";
+    public List<string> MemberIds { get; set; } = [];
+    public string OwnerId { get; set; } = "";
+}
+
+sealed class GroupDeletePayload {
+    public string GroupId { get; set; } = "";
+    public string OwnerId { get; set; } = "";
+    public string Name { get; set; } = "";
+}
+
 record DeliveryReceiptPayload(string MessageId, string ConversationId, string Scope, string Status, long Ts);
 
 public partial class MainWindow : Window {
     const string GroupInvitePrefix = "[cipher-group-invite]";
+    const string GroupDeletePrefix = "[cipher-group-delete]";
     const string DeliveryReceiptPrefix = "[cipher-receipt]";
     const string ReceiptScopeDirect = "dm";
     const string ReceiptScopeGroup = "grp";
@@ -250,8 +264,8 @@ public partial class MainWindow : Window {
         BtnGroupInvite.Content = "Invite Members";
         BtnGroupInvite.Style = (Style)FindResource("GroupBtn");
         BtnGroupInvite.Visibility = Visibility.Collapsed;
-        BtnSideGroupInvite.Content = "Invite";
-        BtnSideGroupInvite.Style = (Style)FindResource("InfoBtn");
+        BtnGroupMenu.Content = "...";
+        BtnGroupMenu.Style = (Style)FindResource("InfoBtn");
         BtnSettings.Style = (Style)FindResource("InfoBtn");
         BtnMyId.Style = (Style)FindResource("InfoBtn");
 
@@ -282,6 +296,8 @@ public partial class MainWindow : Window {
             TypingIndicator.Visibility = Visibility.Collapsed;
         if (!hasConversation && EmojiPopup != null)
             EmojiPopup.IsOpen = false;
+        if (!hasConversation && GroupMenuPopup != null)
+            GroupMenuPopup.IsOpen = false;
     }
 
     void InitializeEmojiPicker() {
@@ -862,7 +878,12 @@ public partial class MainWindow : Window {
             ? Visibility.Visible
             : Visibility.Collapsed;
         BtnGroupInvite.Visibility = Visibility.Collapsed;
-        BtnSideGroupInvite.Visibility = groupInviteVisible;
+        BtnGroupMenu.Visibility = groupInviteVisible;
+        if (_activeConv?.IsGroup == true) {
+            RefreshActiveGroupMenu();
+        } else {
+            GroupMenuPopup.IsOpen = false;
+        }
 
         if (_activeConv == null) {
             BtnSecurityReview.Visibility = Visibility.Collapsed;
@@ -1290,11 +1311,20 @@ public partial class MainWindow : Window {
     }
 
     static string BuildGroupInviteContent(GroupInfo group) =>
-        GroupInvitePrefix + JsonSerializer.Serialize(new GroupInvitePayload(
-            group.GroupId,
-            group.Name,
-            Convert.ToBase64String(group.GroupKey),
-            group.MemberIds));
+        GroupInvitePrefix + JsonSerializer.Serialize(new GroupInvitePayload {
+            GroupId = group.GroupId,
+            Name = group.Name,
+            GroupKey = Convert.ToBase64String(group.GroupKey),
+            MemberIds = group.MemberIds,
+            OwnerId = group.OwnerId
+        });
+
+    static string BuildGroupDeleteContent(GroupInfo group) =>
+        GroupDeletePrefix + JsonSerializer.Serialize(new GroupDeletePayload {
+            GroupId = group.GroupId,
+            OwnerId = group.OwnerId,
+            Name = group.Name
+        });
 
     static bool TryParseGroupInvite(string content, out GroupInvitePayload? invite) {
         invite = null;
@@ -1304,6 +1334,21 @@ public partial class MainWindow : Window {
             invite = JsonSerializer.Deserialize<GroupInvitePayload>(
                 content[GroupInvitePrefix.Length..]);
             return invite != null;
+        } catch {
+            return false;
+        }
+    }
+
+    static bool TryParseGroupDelete(string content, out GroupDeletePayload? payload) {
+        payload = null;
+        if (!content.StartsWith(GroupDeletePrefix, StringComparison.Ordinal)) return false;
+
+        try {
+            payload = JsonSerializer.Deserialize<GroupDeletePayload>(
+                content[GroupDeletePrefix.Length..]);
+            return payload != null &&
+                !string.IsNullOrWhiteSpace(payload.GroupId) &&
+                !string.IsNullOrWhiteSpace(payload.OwnerId);
         } catch {
             return false;
         }
@@ -1591,6 +1636,22 @@ public partial class MainWindow : Window {
             return true;
         }
 
+        if (TryParseGroupDelete(msg.Content, out var deletePayload) && deletePayload != null) {
+            var targetGroup = _convs.FirstOrDefault(c => c.GroupData?.GroupId == deletePayload.GroupId)?.GroupData
+                ?? _vault.LoadGroups().FirstOrDefault(g => g.GroupId == deletePayload.GroupId);
+            if (targetGroup == null) return true;
+
+            if (!string.Equals(targetGroup.OwnerId, senderContact.UserId, StringComparison.Ordinal) &&
+                !string.Equals(deletePayload.OwnerId, senderContact.UserId, StringComparison.Ordinal)) {
+                AppLog.Warn("group", $"ignored delete notice for {AppTelemetry.MaskUserId(deletePayload.GroupId)} from non-owner {AppTelemetry.MaskUserId(senderContact.UserId)}");
+                return true;
+            }
+
+            RemoveGroupLocally(deletePayload.GroupId, $"group deleted: {deletePayload.Name}");
+            AppLog.Info("group", $"applied group delete for {AppTelemetry.MaskUserId(deletePayload.GroupId)} from {AppTelemetry.MaskUserId(senderContact.UserId)}");
+            return true;
+        }
+
         if (!TryParseGroupInvite(msg.Content, out var invite) || invite == null || _user == null)
             return false;
 
@@ -1614,6 +1675,8 @@ public partial class MainWindow : Window {
         group.Name = invite.Name;
         group.MemberIds = invite.MemberIds.Distinct().ToList();
         group.GroupKey = groupKey;
+        if (!string.IsNullOrWhiteSpace(invite.OwnerId))
+            group.OwnerId = invite.OwnerId;
         _vault.SaveGroup(group);
 
         if (existing == null) {
@@ -1699,6 +1762,7 @@ public partial class MainWindow : Window {
             return;
         }
 
+        GroupMenuPopup.IsOpen = false;
         AddOverlay.Visibility = Visibility.Visible;
         AddStatus.Visibility = Visibility.Collapsed;
         AddStatusPanel.Visibility = Visibility.Collapsed;
@@ -1836,6 +1900,7 @@ public partial class MainWindow : Window {
             Name = name,
             MemberIds = memberIds,
             GroupKey = RandomNumberGenerator.GetBytes(32), // Random 256-bit group key
+            OwnerId = _user.UserId,
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
 
@@ -1893,6 +1958,130 @@ public partial class MainWindow : Window {
 
         AddOverlay.Visibility = Visibility.Collapsed;
         SetSidebarStatus($"invited {newMembers.Count} member(s) to #{group.Name}");
+    }
+
+    bool IsCurrentUserGroupOwner(GroupInfo group) =>
+        _user != null &&
+        !string.IsNullOrWhiteSpace(group.OwnerId) &&
+        string.Equals(group.OwnerId, _user.UserId, StringComparison.Ordinal);
+
+    void RefreshActiveGroupMenu() {
+        if (_activeConv?.GroupData is not GroupInfo group) return;
+
+        GroupMenuTitleText.Text = $"# {group.Name}";
+        GroupMenuOwnerText.Text = string.IsNullOrWhiteSpace(group.OwnerId)
+            ? "owner unknown"
+            : $"owner: {ResolveUserLabel(group.OwnerId)}";
+        GroupMenuMembersText.Text = "members: " + string.Join(", ",
+            group.MemberIds
+                .Distinct(StringComparer.Ordinal)
+                .Select(ResolveUserLabel)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase));
+        BtnGroupMenuDelete.Visibility = IsCurrentUserGroupOwner(group)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    void BtnGroupMenu_Click(object s, RoutedEventArgs e) {
+        if (_activeConv?.GroupData == null) return;
+        RefreshActiveGroupMenu();
+        GroupMenuPopup.IsOpen = !GroupMenuPopup.IsOpen;
+    }
+
+    void BtnCloseGroupMenu_Click(object s, RoutedEventArgs e) =>
+        GroupMenuPopup.IsOpen = false;
+
+    async Task SendGroupDeleteNoticeAsync(GroupInfo group) {
+        if (_user == null) return;
+
+        var contactsById = _vault.LoadContacts().ToDictionary(c => c.UserId);
+        foreach (var memberId in group.MemberIds.Where(id => id != _user.UserId).Distinct()) {
+            if (!contactsById.TryGetValue(memberId, out var contact)) continue;
+            if (!await EnsureContactKeysAsync(contact)) continue;
+
+            var convId = contact.ConversationId ?? contact.UserId;
+            var convKey = GetOrDeriveConvKey(contact);
+            if (convKey == null) continue;
+
+            var notice = new Message {
+                Id = Guid.NewGuid().ToString("N"),
+                ConversationId = convId,
+                SenderId = _user.UserId,
+                Content = BuildGroupDeleteContent(group),
+                IsMine = true,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            };
+            notice.SeqNum = _vault.NextSeqNum(convId);
+
+            var payload = Crypto.EncryptDm(convKey, notice);
+            var sig = Crypto.SignPayload(_user.SignPrivKey, payload, notice.SeqNum);
+            var sent = await _net.SendDmAsync(contact.UserId, payload, sig, notice.SeqNum);
+            if (!sent) {
+                _vault.EnqueueOutbox(Guid.NewGuid().ToString("N"), contact.UserId, payload, sig, notice.SeqNum);
+            }
+        }
+    }
+
+    void RemoveGroupLocally(string groupId, string statusMessage) {
+        _vault.DeleteGroupConversation(groupId);
+
+        var conv = _convs.FirstOrDefault(c => c.GroupData?.GroupId == groupId);
+        if (conv != null) {
+            _convs.Remove(conv);
+        }
+
+        if (string.Equals(_activeConvId, groupId, StringComparison.Ordinal)) {
+            _activeConv = null;
+            _activeConvId = "";
+            _messages.Clear();
+            SetConversationSurfaceState(false);
+            UpdateActiveConversationSecurityUi();
+        }
+
+        SetSidebarStatus(statusMessage);
+    }
+
+    void BtnLeaveGroup_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(LeaveGroupAsync, "leave group", showSidebarErrors: false);
+
+    async Task LeaveGroupAsync() {
+        if (_activeConv?.GroupData is not GroupInfo group || _user == null) return;
+
+        GroupMenuPopup.IsOpen = false;
+        var action = IsCurrentUserGroupOwner(group)
+            ? "You created this group. Leaving will only remove it locally; use Delete to close it for everyone."
+            : "Leave this group on this device?";
+        var confirm = MessageBox.Show(
+            action,
+            "Leave Group",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        await Task.CompletedTask;
+        RemoveGroupLocally(group.GroupId, $"left #{group.Name}");
+    }
+
+    void BtnDeleteGroup_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(DeleteGroupAsync, "delete group", showSidebarErrors: false);
+
+    async Task DeleteGroupAsync() {
+        if (_activeConv?.GroupData is not GroupInfo group) return;
+        if (!IsCurrentUserGroupOwner(group)) {
+            SetSidebarStatus("only the group creator can delete this group");
+            return;
+        }
+
+        GroupMenuPopup.IsOpen = false;
+        var confirm = MessageBox.Show(
+            $"Delete #{group.Name} for all current members?\n\nThey will stop seeing it once your delete notice reaches them.",
+            "Delete Group",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        await SendGroupDeleteNoticeAsync(group);
+        RemoveGroupLocally(group.GroupId, $"deleted #{group.Name}");
     }
 
     void ShowAddStatus(string msg, bool isError = true) {

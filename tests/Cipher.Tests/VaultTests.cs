@@ -134,6 +134,32 @@ public class VaultTests {
     }
 
     [Fact]
+    public void GroupOwnerPersistsAcrossReload() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            vault.SaveGroup(new GroupInfo {
+                GroupId = "grp-owned",
+                Name = "owned",
+                MemberIds = new List<string> { "owner-001", "friend-002" },
+                GroupKey = RandomNumberGenerator.GetBytes(32),
+                OwnerId = "owner-001",
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            });
+        }
+
+        using var reopened = new Vault();
+        reopened.Open(vaultPath, key);
+
+        var groups = reopened.LoadGroups();
+        Assert.Single(groups);
+        Assert.Equal("owner-001", groups[0].OwnerId);
+    }
+
+    [Fact]
     public void MessageReceiptsPersistAndRemainMonotonic() {
         var tempDir = CreateTempDirectory();
         var vaultPath = Path.Combine(tempDir, "vault.db");

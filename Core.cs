@@ -53,6 +53,7 @@ public class GroupInfo {
     public string Name { get; set; } = "";
     public List<string> MemberIds { get; set; } = [];
     public byte[] GroupKey { get; set; } = []; // AES-256 group symmetric key
+    public string OwnerId { get; set; } = "";
     public long CreatedAt { get; set; }
 }
 
@@ -440,6 +441,7 @@ public partial class Vault : IDisposable {
                 name_enc BLOB NOT NULL,
                 member_ids TEXT NOT NULL,
                 group_key_enc BLOB NOT NULL,
+                owner_id TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS messages (
@@ -492,6 +494,7 @@ public partial class Vault : IDisposable {
         TryExec("ALTER TABLE contacts ADD COLUMN pending_sign_pub TEXT");
         TryExec("ALTER TABLE contacts ADD COLUMN pending_dh_pub TEXT");
         TryExec("ALTER TABLE contacts ADD COLUMN key_changed_at INTEGER NOT NULL DEFAULT 0");
+        TryExec("ALTER TABLE groups ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''");
     }
 
     // ── Identity ───────────────────────────────────────────────────────────
@@ -586,11 +589,15 @@ public partial class Vault : IDisposable {
     // ── Groups ─────────────────────────────────────────────────────────────
 
     public void SaveGroup(GroupInfo g) {
-        ExecParam(@"INSERT OR REPLACE INTO groups VALUES (@id, @name, @members, @key, @ts)",
+        ExecParam(@"
+            INSERT OR REPLACE INTO groups
+            (group_id, name_enc, member_ids, group_key_enc, owner_id, created_at)
+            VALUES (@id, @name, @members, @key, @owner, @ts)",
             ("id", g.GroupId),
             ("name", Crypto.EncryptStr(_key, g.Name)),
             ("members", string.Join(",", g.MemberIds)),
             ("key", Crypto.EncryptField(_key, g.GroupKey)),
+            ("owner", g.OwnerId),
             ("ts", g.CreatedAt));
     }
 
@@ -609,10 +616,25 @@ public partial class Vault : IDisposable {
                 MemberIds = r.GetString(r.GetOrdinal("member_ids"))
                              .Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(),
                 GroupKey = groupKey,
+                OwnerId = TryGetString(r, "owner_id"),
                 CreatedAt = r.GetInt64(r.GetOrdinal("created_at"))
             });
         }
         return list;
+    }
+
+    public void DeleteGroupConversation(string groupId) {
+        ExecParam(@"
+            DELETE FROM message_receipts
+            WHERE message_id IN (
+                SELECT id FROM messages WHERE conversation_id=@gid
+            )",
+            ("gid", groupId));
+        ExecParam("DELETE FROM messages WHERE conversation_id=@gid", ("gid", groupId));
+        ExecParam("DELETE FROM conv_state WHERE conversation_id=@gid", ("gid", groupId));
+        ExecParam("DELETE FROM outbox WHERE conv_type=@ctype AND group_id=@gid",
+            ("ctype", (int)ConversationType.Group), ("gid", groupId));
+        ExecParam("DELETE FROM groups WHERE group_id=@gid", ("gid", groupId));
     }
 
     // ── Messages ───────────────────────────────────────────────────────────
@@ -917,6 +939,15 @@ public partial class Vault : IDisposable {
             return reader.IsDBNull(ordinal) ? 0 : reader.GetInt64(ordinal);
         } catch (IndexOutOfRangeException) {
             return 0;
+        }
+    }
+
+    static string TryGetString(SqliteDataReader reader, string column) {
+        try {
+            var ordinal = reader.GetOrdinal(column);
+            return reader.IsDBNull(ordinal) ? "" : reader.GetString(ordinal);
+        } catch (IndexOutOfRangeException) {
+            return "";
         }
     }
 

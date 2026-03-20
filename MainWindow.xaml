@@ -157,6 +157,7 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock x:Name="ConnDot" Text="●" FontSize="12" Foreground="{StaticResource Red}" Margin="0,0,8,0" />
@@ -177,8 +178,61 @@
                     <Button x:Name="BtnMyId" Grid.Column="3" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnMyId_Click" />
                     <Button x:Name="BtnOpenAddOverlay" Grid.Column="4" Content="Add Friend" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" Visibility="Collapsed" />
                     <Button x:Name="BtnGroupInvite" Grid.Column="5" Content="Invite Members" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource GroupBtn}" Click="BtnGroupInvite_Click" Visibility="Collapsed" />
-                    <Button x:Name="BtnSettings" Grid.Column="6" Content="System" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnSettings_Click" />
-                    <Button x:Name="BtnOpenNukeOverlay" Grid.Column="7" Content="Nuke" Padding="12,6" FontSize="12" Style="{StaticResource NukeBtn}" Click="BtnNuke_Click" />
+                    <Button x:Name="BtnGroupMenu" Grid.Column="6" Content="..." Margin="0,0,8,0" Padding="12,6" FontSize="13" Style="{StaticResource InfoBtn}" Click="BtnGroupMenu_Click" Visibility="Collapsed" />
+                    <Button x:Name="BtnSettings" Grid.Column="7" Content="System" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnSettings_Click" />
+                    <Button x:Name="BtnOpenNukeOverlay" Grid.Column="8" Content="Nuke" Padding="12,6" FontSize="12" Style="{StaticResource NukeBtn}" Click="BtnNuke_Click" />
+                    <Popup x:Name="GroupMenuPopup"
+                           Placement="Bottom"
+                           PlacementTarget="{Binding ElementName=BtnGroupMenu}"
+                           StaysOpen="False"
+                           AllowsTransparency="True"
+                           PopupAnimation="Fade">
+                        <Border Width="320"
+                                Padding="16"
+                                CornerRadius="16"
+                                Background="#F2182B43"
+                                BorderBrush="{StaticResource Border}"
+                                BorderThickness="1.2">
+                            <StackPanel>
+                                <TextBlock x:Name="GroupMenuTitleText"
+                                           Text="Group"
+                                           FontSize="17"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource White}" />
+                                <TextBlock x:Name="GroupMenuOwnerText"
+                                           Margin="0,6,0,0"
+                                           FontSize="12"
+                                           Foreground="{StaticResource Muted}" />
+                                <TextBlock x:Name="GroupMenuMembersText"
+                                           Margin="0,8,0,14"
+                                           FontSize="12"
+                                           Foreground="{StaticResource White}"
+                                           TextWrapping="Wrap" />
+                                <WrapPanel>
+                                    <Button x:Name="BtnGroupMenuInvite"
+                                            Content="Invite"
+                                            Margin="0,0,8,8"
+                                            Style="{StaticResource AccentBtn}"
+                                            Click="BtnGroupInvite_Click" />
+                                    <Button x:Name="BtnGroupMenuLeave"
+                                            Content="Leave group"
+                                            Margin="0,0,8,8"
+                                            Style="{StaticResource InfoBtn}"
+                                            Click="BtnLeaveGroup_Click" />
+                                    <Button x:Name="BtnGroupMenuDelete"
+                                            Content="Delete group"
+                                            Margin="0,0,8,8"
+                                            Style="{StaticResource NukeBtn}"
+                                            Click="BtnDeleteGroup_Click"
+                                            Visibility="Collapsed" />
+                                    <Button Content="Close"
+                                            Margin="0,0,0,8"
+                                            Style="{StaticResource TermBtn}"
+                                            Click="BtnCloseGroupMenu_Click" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+                    </Popup>
                 </Grid>
             </Border>
 
@@ -213,7 +267,6 @@
                             <WrapPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
                                 <Button x:Name="BtnSidebarAddFriend" Content="Add Friend" Padding="10,6" FontSize="11" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" ToolTip="Add direct contact" />
                                 <Button x:Name="BtnQuickNewGroup" Content="New Group" Padding="10,6" FontSize="11" Margin="8,0,0,0" Style="{StaticResource GroupBtn}" Click="BtnQuickNewGroup_Click" ToolTip="Create a new group" />
-                                <Button x:Name="BtnSideGroupInvite" Content="Invite" Padding="10,6" FontSize="11" Margin="8,0,0,0" Style="{StaticResource InfoBtn}" Click="BtnGroupInvite_Click" ToolTip="Invite members to selected group" Visibility="Collapsed" />
                             </WrapPanel>
                         </Grid>
                         <ListBox x:Name="ConvList" Grid.Row="1" Style="{StaticResource TermList}" SelectionChanged="ConvList_SelectionChanged">

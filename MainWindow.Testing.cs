@@ -42,6 +42,7 @@ public partial class MainWindow {
         SetAutomationId(BtnOpenAddOverlay, "BtnOpenAddOverlay");
         SetAutomationId(BtnSidebarAddFriend, "BtnSidebarAddFriend");
         SetAutomationId(BtnGroupInvite, "BtnGroupInvite");
+        SetAutomationId(BtnGroupMenu, "BtnGroupMenu");
         SetAutomationId(BtnQuickNewGroup, "BtnQuickNewGroup");
         SetAutomationId(BtnOpenNukeOverlay, "BtnOpenNukeOverlay");
         SetAutomationId(BtnSettings, "BtnSettings");
@@ -73,6 +74,13 @@ public partial class MainWindow {
         SetAutomationId(GroupMemberIds, "GroupMemberIds");
         SetAutomationId(BtnConfirmCreateGroup, "BtnConfirmCreateGroup");
         SetAutomationId(BtnCloseGroupOverlay, "BtnCloseGroupOverlay");
+        SetAutomationId(GroupMenuPopup, "GroupMenuPopup");
+        SetAutomationId(GroupMenuTitleText, "GroupMenuTitleText");
+        SetAutomationId(GroupMenuOwnerText, "GroupMenuOwnerText");
+        SetAutomationId(GroupMenuMembersText, "GroupMenuMembersText");
+        SetAutomationId(BtnGroupMenuInvite, "BtnGroupMenuInvite");
+        SetAutomationId(BtnGroupMenuLeave, "BtnGroupMenuLeave");
+        SetAutomationId(BtnGroupMenuDelete, "BtnGroupMenuDelete");
 
         SetAutomationId(SettingsOverlay, "SettingsOverlay");
         SetAutomationId(SettingsVersionText, "SettingsVersionText");
