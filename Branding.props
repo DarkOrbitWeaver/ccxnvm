@@ -3,7 +3,12 @@
     <AssemblyName>Zlabo</AssemblyName>
     <Product>Cipher</Product>
     <Company>DarkOrbitWeaver</Company>
+    <Authors>DarkOrbitWeaver</Authors>
+    <FileDescription>ZLABO private relay chat client.</FileDescription>
     <Description>Private end-to-end encrypted chat client.</Description>
+    <Copyright>Copyright (c) DarkOrbitWeaver</Copyright>
+    <PackageProjectUrl>https://github.com/DarkOrbitWeaver/ccxnvm</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/DarkOrbitWeaver/ccxnvm</RepositoryUrl>
     <BrandingIcon>Assets\256x256.ico</BrandingIcon>
     <WindowIcon>Assets\48x48.ico</WindowIcon>
   </PropertyGroup>

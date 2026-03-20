@@ -306,7 +306,9 @@ public partial class MainWindow : Window {
     readonly Queue<string> _sentReceiptOrder = [];
     const string ConversationMuteSettingPrefix = "conv-muted:";
     const string UiThemeSettingKey = "ui-theme";
+    const string UiChatFontSizeSettingKey = "ui-chat-font-size";
     const string DefaultThemeFile = "Theme.Teal.xaml";
+    const double DefaultChatFontSize = 17d;
     const int MaxSeqTrackerConversations = 512;
     const int MaxReceiptCacheMessages = 5_000;
     const int MaxSentReceiptKeys = 10_000;
@@ -320,7 +322,11 @@ public partial class MainWindow : Window {
     bool _groupInviteMode;
     int _typingIndicatorDotCount;
     string _activeThemeFile = DefaultThemeFile;
+    AppShellPreferences _shellPreferences = new();
     Forms.NotifyIcon? _notifyIcon;
+    bool _applyingShellPreferences;
+    bool _exitRequested;
+    bool _trayCloseHintShown;
     IEnumerable<MessageViewModel> MessageItems => _messages.OfType<MessageViewModel>();
 
     // ── Init ──────────────────────────────────────────────────────────────
@@ -328,6 +334,7 @@ public partial class MainWindow : Window {
     public MainWindow() {
         InitializeComponent();
         AppLog.Info("ui", "main window initialized");
+        InitializeShellPreferences();
         ApplyBranding();
         ApplyUxPolish();
         InitializeDesktopNotifications();
@@ -356,6 +363,7 @@ public partial class MainWindow : Window {
 
         // Try auto-login if session saved
         Loaded += (_, _) => RunUiTask(TryAutoLoginAsync, "startup auto-login", showSidebarErrors: false);
+        Loaded += (_, _) => ApplyStartupTrayLaunch();
 
         SetConversationSurfaceState(false);
 
@@ -373,6 +381,142 @@ public partial class MainWindow : Window {
         if (VaultStorageHintText != null) VaultStorageHintText.Text = AppBranding.VaultStorageHint;
     }
 
+    void InitializeShellPreferences() {
+        var hadStoredPreferences = AppShellPreferencesStore.Exists();
+        var stored = AppShellPreferencesStore.Load();
+        var startup = WindowsStartupManager.ReadStatus();
+
+        if (!hadStoredPreferences && !startup.IsEnabled && !AppRuntime.IsTestMode) {
+            try {
+                var initialDefaults = AppShellPreferencesStore.Sanitize(stored);
+                WindowsStartupManager.Apply(initialDefaults);
+                AppShellPreferencesStore.Save(initialDefaults);
+                startup = WindowsStartupManager.ReadStatus();
+            } catch (Exception ex) {
+                AppLog.Warn("settings", $"failed to apply default startup behavior: {ex.Message}");
+            }
+        }
+
+        _shellPreferences = AppShellPreferencesStore.Sanitize(stored with {
+            StartWithWindows = startup.IsEnabled,
+            StartHiddenOnStartup = startup.IsEnabled ? startup.StartHidden : stored.StartHiddenOnStartup,
+            StartupDelaySeconds = startup.IsEnabled && startup.StartupDelaySeconds >= 0
+                ? startup.StartupDelaySeconds
+                : stored.StartupDelaySeconds
+        });
+
+        if (!hadStoredPreferences) {
+            try {
+                AppShellPreferencesStore.Save(_shellPreferences);
+            } catch (Exception ex) {
+                AppLog.Warn("settings", $"failed to persist initial shell preferences: {ex.Message}");
+            }
+        }
+
+        ApplyShellPreferencesToUi();
+    }
+
+    void ApplyShellPreferencesToUi() {
+        _applyingShellPreferences = true;
+        try {
+            ChkCloseToTrayOnClose.IsChecked = _shellPreferences.CloseToTrayOnClose;
+            ChkStartWithWindows.IsChecked = _shellPreferences.StartWithWindows;
+            ChkStartHiddenOnStartup.IsChecked = _shellPreferences.StartHiddenOnStartup;
+            UpdateStartupDelayButtonStates();
+            UpdateStartupSettingsEnabledState();
+        } finally {
+            _applyingShellPreferences = false;
+        }
+
+        _settingsWindow?.ApplyShellPreferences(_shellPreferences);
+    }
+
+    void UpdateStartupSettingsEnabledState() {
+        var enabled = _shellPreferences.StartWithWindows;
+        ChkStartHiddenOnStartup.IsEnabled = enabled;
+        StartupDelayPanel.IsEnabled = enabled;
+        SettingsStartupHintText.Opacity = enabled ? 1.0 : 0.7;
+    }
+
+    void UpdateStartupDelayButtonStates() {
+        UpdateStartupDelayButton(BtnStartupDelay0, 0, "Off");
+        UpdateStartupDelayButton(BtnStartupDelay15, 15, "15 sec");
+        UpdateStartupDelayButton(BtnStartupDelay30, 30, "30 sec");
+        UpdateStartupDelayButton(BtnStartupDelay60, 60, "60 sec");
+    }
+
+    void UpdateStartupDelayButton(Button button, int seconds, string label) {
+        var active = _shellPreferences.StartupDelaySeconds == seconds;
+        button.Style = (Style)FindResource(active ? "AccentBtn" : "TermBtn");
+        button.Content = active ? $"✓ {label}" : label;
+    }
+
+    bool TryApplyShellPreferences(AppShellPreferences next, string successMessage, bool syncWindowsStartup) {
+        var previous = _shellPreferences;
+        next = AppShellPreferencesStore.Sanitize(next);
+
+        try {
+            if (syncWindowsStartup) {
+                WindowsStartupManager.Apply(next);
+            }
+
+            AppShellPreferencesStore.Save(next);
+            _shellPreferences = next;
+            ApplyShellPreferencesToUi();
+            RefreshDiagnosticsSummary();
+            RefreshSettingsWindowState();
+            SetSidebarStatus(successMessage);
+            return true;
+        } catch (Exception ex) {
+            _shellPreferences = previous;
+            ApplyShellPreferencesToUi();
+            AppLog.Warn("settings", $"failed to apply shell preferences: {ex.Message}");
+            SetSidebarStatus($"! failed to update app behavior: {ex.Message}");
+            return false;
+        }
+    }
+
+    string DescribeCloseBehavior() =>
+        _shellPreferences.CloseToTrayOnClose ? "tray" : "exit";
+
+    string DescribeStartupBehavior() {
+        var startup = WindowsStartupManager.ReadStatus();
+        if (!startup.IsEnabled) return "off";
+
+        var mode = startup.StartHidden ? "tray" : "window";
+        var delay = startup.StartupDelaySeconds <= 0
+            ? "no delay"
+            : $"{startup.StartupDelaySeconds}s delay";
+        return $"on ({mode}, {delay})";
+    }
+
+    void ChkCloseToTrayOnClose_Click(object s, RoutedEventArgs e) {
+        if (_applyingShellPreferences) return;
+        UpdateCloseToTrayPreference(ChkCloseToTrayOnClose.IsChecked == true);
+    }
+
+    void ChkStartWithWindows_Click(object s, RoutedEventArgs e) {
+        if (_applyingShellPreferences) return;
+        UpdateStartWithWindowsPreference(ChkStartWithWindows.IsChecked == true);
+    }
+
+    void ChkStartHiddenOnStartup_Click(object s, RoutedEventArgs e) {
+        if (_applyingShellPreferences) return;
+        UpdateStartHiddenPreference(ChkStartHiddenOnStartup.IsChecked == true);
+    }
+
+    void StartupDelayButton_Click(object s, RoutedEventArgs e) {
+        if (_applyingShellPreferences || s is not Button { Tag: string tag }) return;
+        if (!int.TryParse(tag, out var seconds)) return;
+        UpdateStartupDelayPreference(seconds);
+    }
+
+    void ApplyStartupTrayLaunch() {
+        if (!AppRuntime.StartHidden || AppRuntime.IsTestMode) return;
+
+        Dispatcher.BeginInvoke(() => HideToTray(showHint: false), DispatcherPriority.ApplicationIdle);
+    }
+
     void ApplyUxPolish() {
         BtnSecurityReview.Content = "Verify";
         BtnSecurityReview.Style = (Style)FindResource("GroupBtn");
@@ -387,6 +531,7 @@ public partial class MainWindow : Window {
         BtnMuteConversation.Content = "Mute";
         BtnMuteConversation.Style = (Style)FindResource("InfoBtn");
         BtnMuteConversation.Visibility = Visibility.Collapsed;
+        BtnSettings.Content = "Settings";
         BtnSettings.Style = (Style)FindResource("InfoBtn");
         BtnMyId.Style = (Style)FindResource("InfoBtn");
 
@@ -412,6 +557,18 @@ public partial class MainWindow : Window {
         var canCompose = _activeConv != null && InputBox.IsEnabled;
         BtnEmojiPicker.IsEnabled = canCompose;
         BtnSend.IsEnabled = canCompose && !string.IsNullOrWhiteSpace(InputBox.Text);
+        UpdateInputPlaceholderState();
+    }
+
+    void UpdateInputPlaceholderState() {
+        if (InputPlaceholder == null || InputBox == null) return;
+
+        InputPlaceholder.Text = _activeConv == null
+            ? "Choose a conversation to start chatting"
+            : "Type a message...";
+        InputPlaceholder.Visibility = string.IsNullOrWhiteSpace(InputBox.Text)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     void StartTypingIndicator() {
@@ -477,11 +634,6 @@ public partial class MainWindow : Window {
         if (ComposerPanel != null)
             ComposerPanel.Visibility = Visibility.Visible;
         if (InputBox != null) {
-            if (hasConversation && string.Equals(InputBox.Text, "Select a conversation to start chatting", StringComparison.Ordinal)) {
-                InputBox.Clear();
-            } else if (!hasConversation && string.IsNullOrWhiteSpace(InputBox.Text)) {
-                InputBox.Text = "Select a conversation to start chatting";
-            }
             InputBox.IsEnabled = hasConversation;
         }
         if (!hasConversation)
@@ -777,6 +929,54 @@ public partial class MainWindow : Window {
             _vault.SetSetting(UiThemeSettingKey, themeFile);
 
         UpdateThemeButtonStates();
+        _settingsWindow?.ApplyThemeSelection(themeFile);
+        RefreshDiagnosticsSummary();
+    }
+
+    void ApplySavedChatFontSize() {
+        var fontSize = DefaultChatFontSize;
+        if (_vault.IsOpen) {
+            var raw = _vault.GetSetting(UiChatFontSizeSettingKey);
+            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)) {
+                fontSize = parsed;
+            }
+        }
+
+        ApplyChatFontSize(fontSize, persist: false);
+    }
+
+    void ApplyChatFontSize(double fontSize, bool persist = true) {
+        var normalized = NormalizeChatFontSize(fontSize);
+        if (Application.Current?.Resources is ResourceDictionary resources) {
+            resources["ChatMessageFontSize"] = normalized;
+            resources["ChatSenderFontSize"] = Math.Max(12d, normalized - 4d);
+            resources["ChatMetaFontSize"] = Math.Max(10.5d, normalized - 6d);
+            resources["ConversationNameFontSize"] = Math.Max(13d, normalized - 3d);
+            resources["ConversationPreviewFontSize"] = Math.Max(11.5d, normalized - 5d);
+            resources["ComposerFontSize"] = normalized;
+            resources["ComposerPlaceholderFontSize"] = Math.Max(14d, normalized - 1d);
+        }
+
+        if (persist && _vault.IsOpen) {
+            _vault.SetSetting(
+                UiChatFontSizeSettingKey,
+                normalized.ToString("0", CultureInfo.InvariantCulture));
+        }
+
+        _settingsWindow?.ApplyChatFontSizeSelection(normalized);
+        RefreshDiagnosticsSummary();
+        UpdateInputPlaceholderState();
+    }
+
+    double GetCurrentChatFontSize() =>
+        Application.Current?.TryFindResource("ChatMessageFontSize") is double fontSize
+            ? NormalizeChatFontSize(fontSize)
+            : DefaultChatFontSize;
+
+    static double NormalizeChatFontSize(double fontSize) {
+        if (fontSize <= 15.5) return 15d;
+        if (fontSize <= 18d) return 17d;
+        return 19d;
     }
 
     void ApplySavedTheme() {
@@ -793,6 +993,7 @@ public partial class MainWindow : Window {
             button.BorderThickness = isActive ? new Thickness(2) : new Thickness(1);
             button.Foreground = isActive ? (Brush)FindResource("White") : (Brush)FindResource("Transparent");
         }
+        _settingsWindow?.ApplyThemeSelection(_activeThemeFile);
     }
 
     void UpdateConversationSnapshot(ConvViewModel conv, Message? latestMessage = null, string? senderLabel = null) {
@@ -828,6 +1029,7 @@ public partial class MainWindow : Window {
         AuthPanel.Visibility = Visibility.Collapsed;
         ChatPanel.Visibility = Visibility.Visible;
         ApplySavedTheme();
+        ApplySavedChatFontSize();
         SetConversationSurfaceState(false);
 
         // Show user ID in header (truncated)
@@ -1081,17 +1283,62 @@ public partial class MainWindow : Window {
                 icon = System.Drawing.Icon.ExtractAssociatedIcon(processPath);
             }
 
+            var trayMenu = new Forms.ContextMenuStrip();
+            trayMenu.Items.Add("Open", null, (_, _) => Dispatcher.Invoke(BringWindowToFront));
+            trayMenu.Items.Add("Open settings", null, (_, _) => Dispatcher.Invoke(() => {
+                BringWindowToFront();
+                InitializeShellPreferences();
+                RefreshDiagnosticsSummary();
+                UpdateThemeButtonStates();
+                ApplyShellPreferencesToUi();
+                OpenSettingsWindow();
+            }));
+            trayMenu.Items.Add(new Forms.ToolStripSeparator());
+            trayMenu.Items.Add("Exit", null, (_, _) => Dispatcher.Invoke(ExitFromTray));
+
             _notifyIcon = new Forms.NotifyIcon {
                 Text = AppBranding.WindowTitle,
                 Visible = true,
                 BalloonTipIcon = Forms.ToolTipIcon.Info,
-                Icon = icon ?? System.Drawing.SystemIcons.Information
+                Icon = icon ?? System.Drawing.SystemIcons.Information,
+                ContextMenuStrip = trayMenu
             };
             _notifyIcon.BalloonTipClicked += (_, _) => BringWindowToFront();
             _notifyIcon.DoubleClick += (_, _) => BringWindowToFront();
         } catch (Exception ex) {
             AppLog.Warn("notify", $"desktop notifications unavailable: {ex.Message}");
         }
+    }
+
+    bool HideToTray(bool showHint) {
+        if (_notifyIcon == null) return false;
+
+        GroupMenuPopup.IsOpen = false;
+        AddOverlay.Visibility = Visibility.Collapsed;
+        SettingsOverlay.Visibility = Visibility.Collapsed;
+        NukeOverlay.Visibility = Visibility.Collapsed;
+        _settingsWindow?.Close();
+        ShowInTaskbar = false;
+        WindowState = WindowState.Minimized;
+        Hide();
+
+        if (showHint && !_trayCloseHintShown) {
+            try {
+                _notifyIcon.BalloonTipTitle = AppBranding.WindowTitle;
+                _notifyIcon.BalloonTipText = "Still running in the tray. Double-click to reopen or right-click to exit.";
+                _notifyIcon.ShowBalloonTip(4500);
+            } catch {
+            }
+
+            _trayCloseHintShown = true;
+        }
+
+        return true;
+    }
+
+    void ExitFromTray() {
+        _exitRequested = true;
+        Close();
     }
 
     bool ShouldNotifyForConversation(string conversationId) {
@@ -1138,6 +1385,10 @@ public partial class MainWindow : Window {
 
     void BringWindowToFront() {
         Dispatcher.Invoke(() => {
+            if (!IsVisible) {
+                ShowInTaskbar = true;
+                Show();
+            }
             if (WindowState == WindowState.Minimized) {
                 WindowState = WindowState.Normal;
             }
@@ -2605,8 +2856,8 @@ public partial class MainWindow : Window {
 
         GroupMenuPopup.IsOpen = false;
         var action = IsCurrentUserGroupOwner(group)
-            ? "You created this group. Leaving will only remove it locally; use Delete to close it for everyone."
-            : "Leave this group on this device?";
+            ? $"Leave {group.Name} on this device?\n\nYou created this group. Leaving only removes it locally for you. Use Delete if you want to close it for everyone."
+            : $"Leave {group.Name} on this device?\n\nThis only removes the group from this local app.";
         var confirm = MessageBox.Show(
             action,
             "Leave Group",
@@ -2780,6 +3031,7 @@ public partial class MainWindow : Window {
         _vault.Nuke();
 
         // Kill the app
+        _exitRequested = true;
         Application.Current.Shutdown();
     }
 
@@ -2824,6 +3076,17 @@ public partial class MainWindow : Window {
     }
 
     // ── Cleanup on close ──────────────────────────────────────────────────
+
+    protected override void OnClosing(CancelEventArgs e) {
+        if (!_exitRequested && _shellPreferences.CloseToTrayOnClose && !AppRuntime.IsTestMode) {
+            if (HideToTray(showHint: true)) {
+                e.Cancel = true;
+                return;
+            }
+        }
+
+        base.OnClosing(e);
+    }
 
     protected override void OnClosed(EventArgs e) {
         _uiLifetimeCts.Cancel();

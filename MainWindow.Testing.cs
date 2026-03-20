@@ -83,6 +83,13 @@ public partial class MainWindow {
         SetAutomationId(BtnGroupMenuDelete, "BtnGroupMenuDelete");
 
         SetAutomationId(SettingsOverlay, "SettingsOverlay");
+        SetAutomationId(ChkCloseToTrayOnClose, "ChkCloseToTrayOnClose");
+        SetAutomationId(ChkStartWithWindows, "ChkStartWithWindows");
+        SetAutomationId(ChkStartHiddenOnStartup, "ChkStartHiddenOnStartup");
+        SetAutomationId(BtnStartupDelay0, "BtnStartupDelay0");
+        SetAutomationId(BtnStartupDelay15, "BtnStartupDelay15");
+        SetAutomationId(BtnStartupDelay30, "BtnStartupDelay30");
+        SetAutomationId(BtnStartupDelay60, "BtnStartupDelay60");
         SetAutomationId(SettingsVersionText, "SettingsVersionText");
         SetAutomationId(SettingsUpdateStatusText, "SettingsUpdateStatusText");
         SetAutomationId(UpdateProgressBar, "UpdateProgressBar");

@@ -1,0 +1,360 @@
+<Window x:Class="Cipher.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ZLABO Settings"
+        Width="720"
+        Height="620"
+        MinWidth="620"
+        MinHeight="520"
+        Background="{StaticResource AppBackgroundBrush}"
+        FontFamily="{StaticResource UiFont}"
+        Foreground="{StaticResource White}"
+        WindowStartupLocation="CenterOwner"
+        SnapsToDevicePixels="True">
+    <Grid Margin="18">
+        <Border Padding="18"
+                CornerRadius="22"
+                Background="{StaticResource GlassPanel}"
+                BorderBrush="{DynamicResource GlassBorder}"
+                BorderThickness="1">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="0,0,0,14">
+                    <TextBlock Text="Settings"
+                               FontSize="24"
+                               FontFamily="{StaticResource DisplayFont}"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource White}" />
+                    <TextBlock Text="Appearance, startup, updates, diagnostics, and safety."
+                               Margin="0,6,0,0"
+                               FontSize="12"
+                               Foreground="{StaticResource Muted}" />
+                </StackPanel>
+
+                <TabControl Grid.Row="1"
+                            Style="{StaticResource SettingsTabControl}"
+                            ItemContainerStyle="{StaticResource SettingsTabItem}">
+                    <TabItem Header="Appearance">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="16">
+                                <TextBlock Text="Theme"
+                                           Foreground="{StaticResource White}"
+                                           FontSize="14"
+                                           FontWeight="SemiBold" />
+                                <TextBlock Margin="0,6,0,12"
+                                           Foreground="{StaticResource Muted}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap">Pick the palette you want for the whole app.</TextBlock>
+                                <WrapPanel>
+                                    <StackPanel Margin="0,0,12,12">
+                                        <Button x:Name="BtnThemeTeal"
+                                                Tag="Theme.Teal.xaml"
+                                                Width="58"
+                                                Height="58"
+                                                Background="#1A58D7B6"
+                                                BorderBrush="#4D58D7B6"
+                                                Style="{StaticResource ThemeSwatchBtn}"
+                                                Click="ThemeButton_Click"
+                                                ToolTip="Teal">✓</Button>
+                                        <TextBlock Text="Teal"
+                                                   Margin="0,6,0,0"
+                                                   HorizontalAlignment="Center"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource Muted}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,12,12">
+                                        <Button x:Name="BtnThemeViolet"
+                                                Tag="Theme.Violet.xaml"
+                                                Width="58"
+                                                Height="58"
+                                                Background="#1A9E8CFF"
+                                                BorderBrush="#409E8CFF"
+                                                Style="{StaticResource ThemeSwatchBtn}"
+                                                Click="ThemeButton_Click"
+                                                ToolTip="Violet" />
+                                        <TextBlock Text="Violet"
+                                                   Margin="0,6,0,0"
+                                                   HorizontalAlignment="Center"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource Muted}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,12,12">
+                                        <Button x:Name="BtnThemeBlue"
+                                                Tag="Theme.Blue.xaml"
+                                                Width="58"
+                                                Height="58"
+                                                Background="#1A7AA2FF"
+                                                BorderBrush="#407AA2FF"
+                                                Style="{StaticResource ThemeSwatchBtn}"
+                                                Click="ThemeButton_Click"
+                                                ToolTip="Blue" />
+                                        <TextBlock Text="Blue"
+                                                   Margin="0,6,0,0"
+                                                   HorizontalAlignment="Center"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource Muted}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,12,12">
+                                        <Button x:Name="BtnThemeAmber"
+                                                Tag="Theme.Amber.xaml"
+                                                Width="58"
+                                                Height="58"
+                                                Background="#1AF6B15F"
+                                                BorderBrush="#4DF6B15F"
+                                                Style="{StaticResource ThemeSwatchBtn}"
+                                                Click="ThemeButton_Click"
+                                                ToolTip="Amber" />
+                                        <TextBlock Text="Amber"
+                                                   Margin="0,6,0,0"
+                                                   HorizontalAlignment="Center"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource Muted}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,0,12">
+                                        <Button x:Name="BtnThemeRose"
+                                                Tag="Theme.Rose.xaml"
+                                                Width="58"
+                                                Height="58"
+                                                Background="#1AFF6B96"
+                                                BorderBrush="#4DFF6B96"
+                                                Style="{StaticResource ThemeSwatchBtn}"
+                                                Click="ThemeButton_Click"
+                                                ToolTip="Rose" />
+                                        <TextBlock Text="Rose"
+                                                   Margin="0,6,0,0"
+                                                   HorizontalAlignment="Center"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource Muted}" />
+                                    </StackPanel>
+                                </WrapPanel>
+                                <TextBlock x:Name="ThemeHintText"
+                                           Margin="0,12,0,0"
+                                           Foreground="{StaticResource Muted}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap">Current theme: Teal. Applies and saves instantly to this vault.</TextBlock>
+
+                                <Border Margin="0,18,0,0"
+                                        Padding="14,12"
+                                        CornerRadius="16"
+                                        Background="#14000000"
+                                        BorderBrush="{DynamicResource GlassBorder}"
+                                        BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="Chat text size"
+                                                   Foreground="{StaticResource White}"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Margin="0,6,0,12"
+                                                   Foreground="{StaticResource Muted}"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap">Adjust message text, emoji size, and the composer for better readability on different desktops.</TextBlock>
+                                        <WrapPanel x:Name="ChatFontSizePanel">
+                                            <Button x:Name="BtnChatFontSize15"
+                                                    Tag="15"
+                                                    Margin="0,0,8,8"
+                                                    Content="Compact"
+                                                    Style="{StaticResource TermBtn}"
+                                                    Click="ChatFontSizeButton_Click" />
+                                            <Button x:Name="BtnChatFontSize17"
+                                                    Tag="17"
+                                                    Margin="0,0,8,8"
+                                                    Content="Comfortable"
+                                                    Style="{StaticResource AccentBtn}"
+                                                    Click="ChatFontSizeButton_Click" />
+                                            <Button x:Name="BtnChatFontSize19"
+                                                    Tag="19"
+                                                    Margin="0,0,8,8"
+                                                    Content="Large"
+                                                    Style="{StaticResource TermBtn}"
+                                                    Click="ChatFontSizeButton_Click" />
+                                        </WrapPanel>
+                                        <TextBlock x:Name="ChatFontHintText"
+                                                   Margin="0,8,0,0"
+                                                   Foreground="{StaticResource Muted}"
+                                                   FontSize="11"
+                                                   TextWrapping="Wrap">Current size: Comfortable. Changes apply instantly.</TextBlock>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
+                    <TabItem Header="Startup">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="16">
+                                <TextBlock Text="Window behavior"
+                                           Foreground="{StaticResource White}"
+                                           FontSize="14"
+                                           FontWeight="SemiBold" />
+                                <CheckBox x:Name="ChkCloseToTrayOnClose"
+                                          Margin="0,12,0,0"
+                                          Foreground="{StaticResource White}"
+                                          FontSize="12"
+                                          Content="Closing the window keeps ZLABO running in the tray"
+                                          Click="ChkCloseToTrayOnClose_Click" />
+                                <TextBlock Margin="0,6,0,18"
+                                           Foreground="{StaticResource Muted}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap">Use the tray icon to reopen the app or exit it fully.</TextBlock>
+
+                                <TextBlock Text="Windows startup"
+                                           Foreground="{StaticResource White}"
+                                           FontSize="14"
+                                           FontWeight="SemiBold" />
+                                <CheckBox x:Name="ChkStartWithWindows"
+                                          Margin="0,12,0,0"
+                                          Foreground="{StaticResource White}"
+                                          FontSize="12"
+                                          Content="Start ZLABO when I sign in to Windows"
+                                          Click="ChkStartWithWindows_Click" />
+                                <CheckBox x:Name="ChkStartHiddenOnStartup"
+                                          Margin="0,8,0,0"
+                                          Foreground="{StaticResource White}"
+                                          FontSize="12"
+                                          Content="Open hidden in the tray"
+                                          Click="ChkStartHiddenOnStartup_Click" />
+                                <TextBlock Margin="0,14,0,6"
+                                           Foreground="{StaticResource Muted}"
+                                           FontSize="11">Startup delay</TextBlock>
+                                <WrapPanel x:Name="StartupDelayPanel">
+                                    <Button x:Name="BtnStartupDelay0" Tag="0" Margin="0,0,8,8" Content="Off" Style="{StaticResource TermBtn}" Click="StartupDelayButton_Click" />
+                                    <Button x:Name="BtnStartupDelay15" Tag="15" Margin="0,0,8,8" Content="15 sec" Style="{StaticResource TermBtn}" Click="StartupDelayButton_Click" />
+                                    <Button x:Name="BtnStartupDelay30" Tag="30" Margin="0,0,8,8" Content="30 sec" Style="{StaticResource TermBtn}" Click="StartupDelayButton_Click" />
+                                    <Button x:Name="BtnStartupDelay60" Tag="60" Margin="0,0,8,8" Content="60 sec" Style="{StaticResource TermBtn}" Click="StartupDelayButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="StartupHintText"
+                                           Margin="0,8,0,0"
+                                           Foreground="{StaticResource Muted}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap">Startup registration uses the app build you are running right now. Default launch uses tray mode with a 60 second delay.</TextBlock>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
+                    <TabItem Header="Updates">
+                        <StackPanel Margin="16">
+                            <TextBlock Text="Version"
+                                       Foreground="{StaticResource Muted}"
+                                       FontSize="12" />
+                            <TextBlock x:Name="SettingsVersionText"
+                                       Margin="0,4,0,14"
+                                       Foreground="{StaticResource White}"
+                                       FontSize="13" />
+                            <TextBlock Text="Update status"
+                                       Foreground="{StaticResource Muted}"
+                                       FontSize="12" />
+                            <TextBlock x:Name="SettingsUpdateStatusText"
+                                       Margin="0,4,0,8"
+                                       Foreground="{StaticResource White}"
+                                       FontSize="12"
+                                       TextWrapping="Wrap" />
+                            <ProgressBar x:Name="UpdateProgressBar"
+                                         Height="8"
+                                         Minimum="0"
+                                         Maximum="100"
+                                         Margin="0,0,0,14"
+                                         Visibility="Collapsed" />
+                            <WrapPanel>
+                                <Button x:Name="BtnCheckUpdates"
+                                        Content="Check updates"
+                                        Style="{StaticResource InfoBtn}"
+                                        Margin="0,0,10,10"
+                                        Click="BtnCheckUpdates_Click" />
+                                <Button x:Name="BtnRestartToUpdate"
+                                        Content="Restart to update"
+                                        Style="{StaticResource GroupBtn}"
+                                        Margin="0,0,0,10"
+                                        Click="BtnRestartToUpdate_Click"
+                                        Visibility="Collapsed" />
+                            </WrapPanel>
+                            <TextBlock Margin="0,8,0,0"
+                                       Foreground="{StaticResource Muted}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap">Updates only activate fully in packaged installer builds.</TextBlock>
+                        </StackPanel>
+                    </TabItem>
+
+                    <TabItem Header="Diagnostics">
+                        <StackPanel Margin="16">
+                            <TextBlock Text="Diagnostics"
+                                       Foreground="{StaticResource White}"
+                                       FontSize="14"
+                                       FontWeight="SemiBold" />
+                            <TextBox x:Name="SettingsDiagnosticsText"
+                                     Margin="0,12,0,14"
+                                     Height="250"
+                                     IsReadOnly="True"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Style="{StaticResource TermInput}" />
+                            <WrapPanel>
+                                <Button x:Name="BtnOpenLogs"
+                                        Content="Open logs"
+                                        Style="{StaticResource InfoBtn}"
+                                        Margin="0,0,10,10"
+                                        Click="BtnOpenLogs_Click" />
+                                <Button x:Name="BtnOpenData"
+                                        Content="Open data"
+                                        Style="{StaticResource AccentBtn}"
+                                        Margin="0,0,10,10"
+                                        Click="BtnOpenData_Click" />
+                                <Button x:Name="BtnExportDiagnostics"
+                                        Content="Export diagnostics"
+                                        Style="{StaticResource TermBtn}"
+                                        Margin="0,0,0,10"
+                                        Click="BtnExportDiagnostics_Click" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </TabItem>
+
+                    <TabItem Header="Safety">
+                        <StackPanel Margin="16">
+                            <Border Padding="14"
+                                    CornerRadius="16"
+                                    Background="#401D1114"
+                                    BorderBrush="#99693139"
+                                    BorderThickness="1">
+                                <StackPanel>
+                                    <TextBlock Text="Danger zone"
+                                               FontSize="14"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource Red}" />
+                                    <TextBlock Margin="0,8,0,14"
+                                               Foreground="{StaticResource Muted}"
+                                               FontSize="12"
+                                               TextWrapping="Wrap">Vault nuke permanently destroys local history, contacts, and session data on this device.</TextBlock>
+                                    <Button x:Name="BtnOpenNukeOverlay"
+                                            Content="Open nuke confirmation"
+                                            Style="{StaticResource NukeBtn}"
+                                            Click="BtnOpenNukeOverlay_Click" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </TabItem>
+                </TabControl>
+
+                <Grid Grid.Row="2" Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Changes save immediately."
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource Muted}"
+                               FontSize="11" />
+                    <Button Grid.Column="1"
+                            Content="Close"
+                            Style="{StaticResource TermBtn}"
+                            Margin="10,0,0,0"
+                            Click="BtnClose_Click" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

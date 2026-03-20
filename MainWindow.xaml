@@ -19,7 +19,7 @@
         <Style x:Key="MsgTime" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource Muted}" />
             <Setter Property="FontFamily" Value="{StaticResource Mono}" />
-            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontSize" Value="{DynamicResource ChatMetaFontSize}" />
             <Setter Property="VerticalAlignment" Value="Bottom" />
             <Setter Property="Margin" Value="0,0,8,1" />
         </Style>
@@ -56,13 +56,13 @@
         <DataTemplate DataType="{x:Type local:MessageViewModel}">
             <Grid Margin="0,5">
                 <Border x:Name="MessageBubble"
-                        Padding="14,10"
-                        CornerRadius="14"
+                        Padding="12,8"
+                        CornerRadius="13"
                         BorderBrush="{Binding BubbleBorderBrush}"
                         BorderThickness="1"
                         Background="{Binding BubbleBackground}"
                         HorizontalAlignment="Left"
-                        MaxWidth="580">
+                        MaxWidth="520">
                     <Border.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
                                      Background="{StaticResource GlassOverlay}"
@@ -81,7 +81,7 @@
                         <DockPanel Grid.Row="0" LastChildFill="False">
                             <TextBlock Text="{Binding SenderLabel}"
                                        Foreground="{Binding SenderColorBrush}"
-                                       FontSize="12"
+                                       FontSize="{DynamicResource ChatSenderFontSize}"
                                        FontWeight="SemiBold"
                                        DockPanel.Dock="Left" />
                             <TextBlock Text="{Binding TimeStr}"
@@ -99,9 +99,10 @@
                                      BorderThickness="0"
                                      Padding="0"
                                      FontFamily="{StaticResource ChatFont}"
-                                     FontSize="15"
+                                     FontSize="{DynamicResource ChatMessageFontSize}"
                                      ContextMenuService.IsEnabled="False"
-                                     local:MsgBodyHelper.Content="{Binding}" />
+                                     local:MsgBodyHelper.Content="{Binding}"
+                                     local:MsgBodyHelper.RenderFontSize="{DynamicResource ChatMessageFontSize}" />
                         <StackPanel Grid.Row="2"
                                     Margin="0,8,0,0"
                                     HorizontalAlignment="Right"
@@ -109,7 +110,7 @@
                             <TextBlock Text="{Binding DeliveryText}"
                                        Foreground="{Binding DeliveryBrush}"
                                        FontFamily="{StaticResource Mono}"
-                                       FontSize="11"
+                                       FontSize="{DynamicResource ChatMetaFontSize}"
                                        HorizontalAlignment="Right"
                                        Visibility="{Binding HasDeliveryText, Converter={StaticResource BoolVis}}" />
                             <ItemsControl ItemsSource="{Binding SeenBy}"
@@ -130,7 +131,7 @@
                                                 BorderThickness="1">
                                             <TextBlock Text="{Binding Name}"
                                                        Foreground="{Binding Color}"
-                                                       FontSize="10"
+                                                       FontSize="{DynamicResource ChatMetaFontSize}"
                                                        FontWeight="SemiBold" />
                                         </Border>
                                     </DataTemplate>
@@ -252,7 +253,7 @@
                                FontSize="11"
                                TextAlignment="Center"
                                TextWrapping="Wrap">vault stored in %APPDATA%\Cipher</TextBlock>
-                </StackPanel>
+                    </StackPanel>
             </Border>
         </Grid>
 
@@ -378,19 +379,27 @@
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <Grid Grid.Row="0" Margin="0,0,0,10">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                        <Grid Grid.Row="0" Margin="0,0,0,12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
                             <StackPanel>
                                 <TextBlock Text="聊 Conversations" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource White}" />
-                                <TextBlock Text="Direct contacts and groups" FontSize="11" Foreground="{StaticResource Muted}" />
+                                <TextBlock Text="Direct contacts and groups" FontSize="12" Foreground="{StaticResource Muted}" Margin="0,2,0,0" />
                             </StackPanel>
-                            <WrapPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
-                                <Button x:Name="BtnSidebarAddFriend" Content="Add Friend" Padding="10,6" FontSize="11" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" ToolTip="Add direct contact" />
-                                <Button x:Name="BtnQuickNewGroup" Content="New Group" Padding="10,6" FontSize="11" Margin="8,0,0,0" Style="{StaticResource GroupBtn}" Click="BtnQuickNewGroup_Click" ToolTip="Create a new group" />
-                            </WrapPanel>
+                            <Border Grid.Row="1"
+                                    Margin="0,12,0,0"
+                                    Padding="10"
+                                    CornerRadius="14"
+                                    Background="#14000000"
+                                    BorderBrush="{DynamicResource GlassBorder}"
+                                    BorderThickness="1">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Button x:Name="BtnSidebarAddFriend" Content="Add Friend" Padding="12,7" FontSize="12" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" ToolTip="Add direct contact" />
+                                    <Button x:Name="BtnQuickNewGroup" Content="New Group" Padding="12,7" FontSize="12" Margin="10,0,0,0" Style="{StaticResource GroupBtn}" Click="BtnQuickNewGroup_Click" ToolTip="Create a new group" />
+                                </StackPanel>
+                            </Border>
                         </Grid>
                         <ListBox x:Name="ConvList" Grid.Row="1" Style="{StaticResource TermList}" SelectionChanged="ConvList_SelectionChanged">
                             <ListBox.ItemTemplate>
@@ -414,7 +423,7 @@
                                             <DockPanel LastChildFill="False">
                                                 <TextBlock Text="{Binding DisplayName}"
                                                            Foreground="{Binding NameBrush}"
-                                                           FontSize="13"
+                                                           FontSize="{DynamicResource ConversationNameFontSize}"
                                                            FontWeight="SemiBold"
                                                            TextTrimming="CharacterEllipsis"
                                                            DockPanel.Dock="Left" />
@@ -451,7 +460,7 @@
                                             </DockPanel>
                                             <TextBlock Text="{Binding LastMessagePreview}"
                                                        Foreground="{StaticResource Muted}"
-                                                       FontSize="11"
+                                                       FontSize="{DynamicResource ConversationPreviewFontSize}"
                                                        Margin="0,2,0,0"
                                                        TextTrimming="CharacterEllipsis" />
                                         </StackPanel>
@@ -669,7 +678,10 @@
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBox x:Name="InputBox" Grid.Column="0" Style="{StaticResource TermInput}" FontFamily="{StaticResource ChatFont}" FontSize="14" MinHeight="46" VerticalContentAlignment="Center" IsEnabled="False" KeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged" ToolTip="Enter to send. Shift+Enter for a new line." />
+                            <Grid Grid.Column="0">
+                                <TextBox x:Name="InputBox" Style="{StaticResource TermInput}" FontFamily="{StaticResource ChatFont}" FontSize="{DynamicResource ComposerFontSize}" MinHeight="52" MaxHeight="132" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" IsEnabled="False" KeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged" ToolTip="Enter to send. Shift+Enter for a new line." />
+                                <TextBlock x:Name="InputPlaceholder" Margin="18,14,18,0" VerticalAlignment="Top" Foreground="{StaticResource Dim}" FontSize="{DynamicResource ComposerPlaceholderFontSize}" Opacity="0.82" IsHitTestVisible="False" Text="Choose a conversation to start chatting" />
+                            </Grid>
                             <Button x:Name="BtnEmojiPicker" Grid.Column="1" Margin="10,0,0,0" Padding="10,10" FontSize="16" Content="🙂" Style="{StaticResource TermBtn}" Click="BtnEmojiPicker_Click" ToolTip="Open OpenMoji picker" />
                             <Button x:Name="BtnSend" Grid.Column="2" Margin="10,0,0,0" Padding="18,10" FontSize="13" Content="Send" IsEnabled="False" Style="{StaticResource AccentBtn}" Click="BtnSend_Click" />
                             <Popup x:Name="EmojiPopup" Placement="Top" PlacementTarget="{Binding ElementName=BtnEmojiPicker}" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
@@ -734,9 +746,72 @@
         </Grid>
 
         <Grid x:Name="SettingsOverlay" Visibility="Collapsed" Panel.ZIndex="25" Background="#B3000000">
-            <Border Width="540" Padding="24" CornerRadius="22" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <StackPanel>
+            <Border Width="580" MaxHeight="680" Padding="0" CornerRadius="22" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="24">
                     <TextBlock Text="系 System" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource White}" Margin="0,0,0,18" />
+                    <Border Margin="0,0,0,14"
+                            Padding="14,12"
+                            CornerRadius="16"
+                            Background="#14000000"
+                            BorderBrush="{DynamicResource GlassBorder}"
+                            BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="Behavior"
+                                       Foreground="{StaticResource White}"
+                                       FontSize="13"
+                                       FontWeight="SemiBold" />
+                            <CheckBox x:Name="ChkCloseToTrayOnClose"
+                                      Margin="0,10,0,0"
+                                      Foreground="{StaticResource White}"
+                                      FontSize="12"
+                                      Content="Closing the window keeps ZLABO running in the tray"
+                                      Click="ChkCloseToTrayOnClose_Click" />
+                            <TextBlock Margin="0,6,0,0"
+                                       Foreground="{StaticResource Muted}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap">When enabled, the X button hides the app instead of exiting. Use the tray icon menu to reopen or fully quit.</TextBlock>
+                        </StackPanel>
+                    </Border>
+                    <Border Margin="0,0,0,14"
+                            Padding="14,12"
+                            CornerRadius="16"
+                            Background="#14000000"
+                            BorderBrush="{DynamicResource GlassBorder}"
+                            BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="Startup"
+                                       Foreground="{StaticResource White}"
+                                       FontSize="13"
+                                       FontWeight="SemiBold" />
+                            <CheckBox x:Name="ChkStartWithWindows"
+                                      Margin="0,10,0,0"
+                                      Foreground="{StaticResource White}"
+                                      FontSize="12"
+                                      Content="Start ZLABO when I sign in to Windows"
+                                      Click="ChkStartWithWindows_Click" />
+                            <CheckBox x:Name="ChkStartHiddenOnStartup"
+                                      Margin="0,8,0,0"
+                                      Foreground="{StaticResource White}"
+                                      FontSize="12"
+                                      Content="Start hidden in the tray"
+                                      Click="ChkStartHiddenOnStartup_Click" />
+                            <TextBlock Margin="0,12,0,6"
+                                       Foreground="{StaticResource Muted}"
+                                       FontSize="11">Startup delay</TextBlock>
+                            <WrapPanel x:Name="StartupDelayPanel">
+                                <Button x:Name="BtnStartupDelay0" Tag="0" Margin="0,0,8,8" Content="Off" Style="{StaticResource TermBtn}" Click="StartupDelayButton_Click" />
+                                <Button x:Name="BtnStartupDelay15" Tag="15" Margin="0,0,8,8" Content="15 sec" Style="{StaticResource TermBtn}" Click="StartupDelayButton_Click" />
+                                <Button x:Name="BtnStartupDelay30" Tag="30" Margin="0,0,8,8" Content="30 sec" Style="{StaticResource TermBtn}" Click="StartupDelayButton_Click" />
+                                <Button x:Name="BtnStartupDelay60" Tag="60" Margin="0,0,8,8" Content="60 sec" Style="{StaticResource TermBtn}" Click="StartupDelayButton_Click" />
+                            </WrapPanel>
+                            <TextBlock x:Name="SettingsStartupHintText"
+                                       Margin="0,4,0,0"
+                                       Foreground="{StaticResource Muted}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap">Startup registration uses the app build you are running right now.</TextBlock>
+                        </StackPanel>
+                    </Border>
                     <TextBlock Text="Version" Foreground="{StaticResource Muted}" FontSize="12" />
                     <TextBlock x:Name="SettingsVersionText" Margin="0,4,0,14" Foreground="{StaticResource White}" FontSize="13" />
                     <TextBlock Text="Update status" Foreground="{StaticResource Muted}" FontSize="12" />
@@ -787,7 +862,8 @@
                         <Button x:Name="BtnExportDiagnostics" Content="Export diagnostics" Style="{StaticResource InfoBtn}" Click="BtnExportDiagnostics_Click" />
                         <Button Grid.Column="1" Margin="10,0,0,0" Content="Close" Style="{StaticResource TermBtn}" Click="BtnCloseSettings_Click" />
                     </Grid>
-                </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
             </Border>
         </Grid>
 

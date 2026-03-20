@@ -45,15 +45,19 @@ public partial class MainWindow {
             SetSidebarStatus("update ready: restart when you're done chatting");
         }
 
+        _settingsWindow?.ApplyUpdateSnapshot(snapshot, _updater.CanCheck, _updater.CanRestartToApply);
         RefreshDiagnosticsSummary();
     }
 
-    void RefreshDiagnosticsSummary() {
+    string BuildDiagnosticsSummaryText() {
         var startup = App.LastStartupHealth;
         var notes = new List<string> {
             $"data: {AppPaths.AppDataRoot}",
             $"logs: {AppPaths.LogsDir}",
-            $"theme: {_activeThemeFile}"
+            $"theme: {_activeThemeFile}",
+            $"chat text: {GetCurrentChatFontSize():0}",
+            $"close: {DescribeCloseBehavior()}",
+            $"startup: {DescribeStartupBehavior()}"
         };
 
         if (startup.Errors.Count > 0) {
@@ -68,7 +72,14 @@ public partial class MainWindow {
             notes.Add($"latest backup: {_vault.LastMaintenanceBackupPath}");
         }
 
-        SettingsDiagnosticsText.Text = string.Join(Environment.NewLine, notes);
+        return string.Join(Environment.NewLine, notes);
+    }
+
+    void RefreshDiagnosticsSummary() {
+        var summary = BuildDiagnosticsSummaryText();
+        SettingsDiagnosticsText.Text = summary;
+        _settingsWindow?.SetDiagnosticsText(summary);
+        _settingsWindow?.SetVersionText($"{AppBranding.ProductName} v{AppInfo.DisplayVersion}");
     }
 
     void ReportVaultMaintenance() {
@@ -87,9 +98,10 @@ public partial class MainWindow {
     }
 
     void BtnSettings_Click(object s, RoutedEventArgs e) {
+        InitializeShellPreferences();
         RefreshDiagnosticsSummary();
         UpdateThemeButtonStates();
-        SettingsOverlay.Visibility = Visibility.Visible;
+        OpenSettingsWindow();
     }
 
     void BtnCloseSettings_Click(object s, RoutedEventArgs e) =>
@@ -111,6 +123,7 @@ public partial class MainWindow {
             _vault.CreateMaintenanceBackup("pre-update");
         }
 
+        _exitRequested = true;
         _outboxTimer?.Stop();
         await _net.DisposeAsync();
         AppLog.Info("update", "handing off to Velopack for restart");

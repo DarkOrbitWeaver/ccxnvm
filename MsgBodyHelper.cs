@@ -4,14 +4,19 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Application = System.Windows.Application;
 using FontFamily = System.Windows.Media.FontFamily;
+using Image = System.Windows.Controls.Image;
 using RichTextBox = System.Windows.Controls.RichTextBox;
 
 namespace Cipher;
 
 public static class MsgBodyHelper {
     static readonly FontFamily EmojiFont = new("Segoe UI Emoji");
+    static readonly IReadOnlyDictionary<string, OpenMojiEntry> EmojiEntries =
+        OpenMojiCatalog.Entries.ToDictionary(entry => entry.Emoji, StringComparer.Ordinal);
+    static readonly Dictionary<string, ImageSource> EmojiImageCache = [];
 
     public static readonly DependencyProperty ContentProperty =
         DependencyProperty.RegisterAttached(
@@ -20,19 +25,38 @@ public static class MsgBodyHelper {
             typeof(MsgBodyHelper),
             new PropertyMetadata(null, OnContentChanged));
 
+    public static readonly DependencyProperty RenderFontSizeProperty =
+        DependencyProperty.RegisterAttached(
+            "RenderFontSize",
+            typeof(double),
+            typeof(MsgBodyHelper),
+            new PropertyMetadata(15d, OnRenderFontSizeChanged));
+
     public static void SetContent(DependencyObject element, MessageViewModel value) =>
         element.SetValue(ContentProperty, value);
 
     public static MessageViewModel? GetContent(DependencyObject element) =>
         element.GetValue(ContentProperty) as MessageViewModel;
 
+    public static void SetRenderFontSize(DependencyObject element, double value) =>
+        element.SetValue(RenderFontSizeProperty, value);
+
+    public static double GetRenderFontSize(DependencyObject element) =>
+        element.GetValue(RenderFontSizeProperty) is double fontSize
+            ? fontSize
+            : 15d;
+
     static void OnContentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) {
         if (d is not RichTextBox rtb) return;
-        rtb.Document = BuildDocument(e.NewValue as MessageViewModel);
+        rtb.Document = BuildDocument(e.NewValue as MessageViewModel, GetRenderFontSize(rtb));
     }
 
-    static FlowDocument BuildDocument(MessageViewModel? vm) {
-        var fontSize = 15d;
+    static void OnRenderFontSizeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) {
+        if (d is not RichTextBox rtb) return;
+        rtb.Document = BuildDocument(GetContent(rtb), GetRenderFontSize(rtb));
+    }
+
+    static FlowDocument BuildDocument(MessageViewModel? vm, double fontSize) {
         var doc = new FlowDocument {
             PagePadding = new Thickness(0),
             Background = System.Windows.Media.Brushes.Transparent,
@@ -55,10 +79,7 @@ public static class MsgBodyHelper {
             var element = enumerator.GetTextElement();
             if (LooksLikeEmoji(element)) {
                 FlushPlainText();
-                paragraph.Inlines.Add(new Run(element) {
-                    FontFamily = EmojiFont,
-                    FontSize = fontSize
-                });
+                paragraph.Inlines.Add(BuildEmojiInline(element, fontSize));
             } else {
                 plainText.Append(element);
             }
@@ -76,6 +97,60 @@ public static class MsgBodyHelper {
                 FontSize = fontSize
             });
             plainText.Clear();
+        }
+    }
+
+    static Inline BuildEmojiInline(string element, double fontSize) {
+        if (TryCreateEmojiImage(element, fontSize, out var image)) {
+            return new InlineUIContainer(image) {
+                BaselineAlignment = BaselineAlignment.Center
+            };
+        }
+
+        return new Run(element) {
+            FontFamily = EmojiFont,
+            FontSize = fontSize
+        };
+    }
+
+    static bool TryCreateEmojiImage(string element, double fontSize, out Image image) {
+        image = null!;
+        if (!EmojiEntries.TryGetValue(element, out var entry)) {
+            return false;
+        }
+
+        var source = GetEmojiImageSource(entry);
+        if (source == null) {
+            return false;
+        }
+
+        var size = fontSize + 3;
+        image = new Image {
+            Source = source,
+            Width = size,
+            Height = size,
+            Stretch = Stretch.Uniform,
+            Margin = new Thickness(0, -1, 0, -3)
+        };
+        return true;
+    }
+
+    static ImageSource? GetEmojiImageSource(OpenMojiEntry entry) {
+        if (EmojiImageCache.TryGetValue(entry.Code, out var cached)) {
+            return cached;
+        }
+
+        try {
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.UriSource = new Uri(entry.PackUri, UriKind.Absolute);
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            EmojiImageCache[entry.Code] = bitmap;
+            return bitmap;
+        } catch {
+            return null;
         }
     }
 

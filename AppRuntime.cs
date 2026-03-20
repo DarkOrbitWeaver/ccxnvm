@@ -9,6 +9,7 @@ public sealed record AppLaunchOptions(
     string? AppDataRootOverride = null,
     string? RelayUrlOverride = null,
     bool DisableUpdater = false,
+    bool StartHidden = false,
     string? SignalFile = null,
     string? SeedProfile = null,
     string? FaultProfile = null,
@@ -26,6 +27,7 @@ public static class AppRuntime {
 
     public static bool IsTestMode => Current.TestMode;
     public static bool DisableUpdater => Current.DisableUpdater;
+    public static bool StartHidden => Current.StartHidden;
     public static string? AppDataRootOverride => Current.AppDataRootOverride;
     public static string EffectiveDefaultRelayUrl =>
         AppBranding.ResolveRelayUrl(Current.RelayUrlOverride);
@@ -35,6 +37,7 @@ public static class AppRuntime {
         string? appDataRootOverride = null;
         string? relayUrlOverride = null;
         var disableUpdater = false;
+        var startHidden = false;
         string? signalFile = null;
         string? seedProfile = null;
         string? faultProfile = null;
@@ -54,6 +57,9 @@ public static class AppRuntime {
                     break;
                 case "--disable-updater":
                     disableUpdater = true;
+                    break;
+                case "--start-hidden":
+                    startHidden = true;
                     break;
                 case "--appdata-dir":
                     appDataRootOverride = NormalizePath(ReadValue(args, ref i, inlineValue));
@@ -97,6 +103,7 @@ public static class AppRuntime {
             appDataRootOverride,
             relayUrlOverride,
             disableUpdater,
+            startHidden,
             signalFile,
             seedProfile,
             faultProfile,
