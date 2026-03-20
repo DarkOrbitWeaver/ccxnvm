@@ -54,15 +54,15 @@
             </Grid>
         </DataTemplate>
         <DataTemplate DataType="{x:Type local:MessageViewModel}">
-            <Grid Margin="0,5">
+            <Grid Margin="0,3">
                 <Border x:Name="MessageBubble"
-                        Padding="12,8"
-                        CornerRadius="13"
+                        Padding="10,6"
+                        CornerRadius="11"
                         BorderBrush="{Binding BubbleBorderBrush}"
                         BorderThickness="1"
                         Background="{Binding BubbleBackground}"
                         HorizontalAlignment="Left"
-                        MaxWidth="520">
+                        MaxWidth="496">
                     <Border.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
                                      Background="{StaticResource GlassOverlay}"
@@ -86,11 +86,11 @@
                                        DockPanel.Dock="Left" />
                             <TextBlock Text="{Binding TimeStr}"
                                        Style="{StaticResource MsgTime}"
-                                       Margin="12,0,0,0"
+                                       Margin="10,0,0,0"
                                        DockPanel.Dock="Right" />
                         </DockPanel>
                         <RichTextBox Grid.Row="1"
-                                     Margin="0,6,0,0"
+                                     Margin="0,4,0,0"
                                      IsReadOnly="True"
                                      IsDocumentEnabled="False"
                                      IsTabStop="False"
@@ -104,7 +104,7 @@
                                      local:MsgBodyHelper.Content="{Binding}"
                                      local:MsgBodyHelper.RenderFontSize="{DynamicResource ChatMessageFontSize}" />
                         <StackPanel Grid.Row="2"
-                                    Margin="0,8,0,0"
+                                    Margin="0,6,0,0"
                                     HorizontalAlignment="Right"
                                     Visibility="{Binding IsMine, Converter={StaticResource BoolVis}}">
                             <TextBlock Text="{Binding DeliveryText}"
@@ -279,9 +279,6 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock x:Name="ConnDot" Text="●" FontSize="12" Foreground="{StaticResource Red}" Margin="0,0,8,0" />
@@ -292,19 +289,18 @@
                     </StackPanel>
                     <TextBlock x:Name="ActiveConvName"
                                Grid.Column="1"
-                               Margin="14,0"
+                               Margin="18,0"
                                VerticalAlignment="Center"
-                               FontSize="14"
-                               Foreground="{StaticResource Muted}"
+                               FontSize="18"
+                               FontFamily="{StaticResource DisplayFont}"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource White}"
                                Text="No conversation selected"
                                TextTrimming="CharacterEllipsis" />
                     <Button x:Name="BtnSecurityReview" Grid.Column="2" Content="Verify" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource TermBtn}" Click="BtnSecurityReview_Click" Visibility="Collapsed" />
                     <Button x:Name="BtnMyId" Grid.Column="3" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnMyId_Click" />
                     <Button x:Name="BtnOpenAddOverlay" Grid.Column="4" Content="Add Friend" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" Visibility="Collapsed" />
-                    <Button x:Name="BtnGroupInvite" Grid.Column="5" Content="Invite Members" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource GroupBtn}" Click="BtnGroupInvite_Click" Visibility="Collapsed" />
-                    <Button x:Name="BtnGroupMenu" Grid.Column="6" Content="..." Margin="0,0,8,0" Padding="12,6" FontSize="13" Style="{StaticResource InfoBtn}" Click="BtnGroupMenu_Click" Visibility="Collapsed" />
-                    <Button x:Name="BtnMuteConversation" Grid.Column="7" Content="Mute" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnMuteConversation_Click" Visibility="Collapsed" />
-                    <Button x:Name="BtnSettings" Grid.Column="8" Content="System" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnSettings_Click" />
+                    <Button x:Name="BtnSettings" Grid.Column="5" Content="System" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnSettings_Click" />
                     <Popup x:Name="GroupMenuPopup"
                            Placement="Bottom"
                            PlacementTarget="{Binding ElementName=BtnGroupMenu}"
@@ -377,7 +373,6 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
-                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <Grid Grid.Row="0" Margin="0,0,0,12">
                             <Grid.RowDefinitions>
@@ -388,25 +383,20 @@
                                 <TextBlock Text="聊 Conversations" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource White}" />
                                 <TextBlock Text="Direct contacts and groups" FontSize="12" Foreground="{StaticResource Muted}" Margin="0,2,0,0" />
                             </StackPanel>
-                            <Border Grid.Row="1"
-                                    Margin="0,12,0,0"
-                                    Padding="10"
-                                    CornerRadius="14"
-                                    Background="#14000000"
-                                    BorderBrush="{DynamicResource GlassBorder}"
-                                    BorderThickness="1">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                    <Button x:Name="BtnSidebarAddFriend" Content="Add Friend" Padding="12,7" FontSize="12" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" ToolTip="Add direct contact" />
-                                    <Button x:Name="BtnQuickNewGroup" Content="New Group" Padding="12,7" FontSize="12" Margin="10,0,0,0" Style="{StaticResource GroupBtn}" Click="BtnQuickNewGroup_Click" ToolTip="Create a new group" />
-                                </StackPanel>
-                            </Border>
+                            <StackPanel Grid.Row="1"
+                                        Margin="0,12,0,0"
+                                        Orientation="Horizontal"
+                                        HorizontalAlignment="Center">
+                                <Button x:Name="BtnSidebarAddFriend" Content="Add Friend" Padding="12,7" FontSize="12" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" ToolTip="Add direct contact" />
+                                <Button x:Name="BtnQuickNewGroup" Content="New Group" Padding="12,7" FontSize="12" Margin="10,0,0,0" Style="{StaticResource GroupBtn}" Click="BtnQuickNewGroup_Click" ToolTip="Create a new group" />
+                            </StackPanel>
                         </Grid>
                         <ListBox x:Name="ConvList" Grid.Row="1" Style="{StaticResource TermList}" SelectionChanged="ConvList_SelectionChanged">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Grid Margin="0,2">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="16" />
+                                            <ColumnDefinition Width="26" />
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
@@ -415,10 +405,10 @@
                                                    Foreground="{Binding ConversationGlyphBrush}"
                                                    FontFamily="{Binding ConversationGlyphFontFamily}"
                                                    FontSize="{Binding ConversationGlyphFontSize}"
-                                                   Width="16"
+                                                   Width="20"
                                                    VerticalAlignment="Center"
                                                    TextAlignment="Center"
-                                                   Margin="0,1,10,0" />
+                                                   Margin="0,0,8,0" />
                                         <StackPanel Grid.Column="1" Margin="0,0,10,0">
                                             <DockPanel LastChildFill="False">
                                                 <TextBlock Text="{Binding DisplayName}"
@@ -487,9 +477,6 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
-                        <Border Grid.Row="2" Margin="0,10,0,0" Padding="10" CornerRadius="12" Background="#5A121C2C" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1">
-                            <TextBlock x:Name="SidebarStatus" FontSize="11" FontFamily="{StaticResource Mono}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" />
-                        </Border>
                     </Grid>
                 </Border>
 
@@ -503,6 +490,27 @@
                     </Grid.RowDefinitions>
                     <Border Grid.Row="0" CornerRadius="18" Background="{StaticResource GlassPanel}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" Padding="12">
                         <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Border x:Name="ConversationActionsBar"
+                                    Grid.Row="0"
+                                    Margin="0,0,0,10"
+                                    Padding="10,8"
+                                    CornerRadius="14"
+                                    Background="#14000000"
+                                    BorderBrush="{DynamicResource GlassBorder}"
+                                    BorderThickness="1"
+                                    HorizontalAlignment="Right"
+                                    Visibility="Collapsed">
+                                <StackPanel Orientation="Horizontal">
+                                    <Button x:Name="BtnMuteConversation" Content="Mute" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnMuteConversation_Click" Visibility="Collapsed" />
+                                    <Button x:Name="BtnGroupInvite" Content="Invite Members" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource GroupBtn}" Click="BtnGroupInvite_Click" Visibility="Collapsed" />
+                                    <Button x:Name="BtnGroupMenu" Content="..." Padding="12,6" FontSize="13" Style="{StaticResource InfoBtn}" Click="BtnGroupMenu_Click" Visibility="Collapsed" />
+                                </StackPanel>
+                            </Border>
+                            <Grid Grid.Row="1">
                             <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
                                 <TextBlock Text="语"
                                            FontSize="36"
@@ -524,7 +532,7 @@
                             <ListBox x:Name="MessageList"
                                       Background="Transparent"
                                       BorderThickness="0"
-                                     Padding="0,6,0,0"
+                                     Padding="0,2,0,0"
                                      Visibility="Collapsed"
                                      SelectionMode="Single"
                                      Focusable="False"
@@ -668,6 +676,7 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            </Grid>
                         </Grid>
                     </Border>
                     <TextBlock x:Name="TypingIndicator" Grid.Row="1" Margin="12,8,12,0" Visibility="Collapsed" FontSize="11" Foreground="{StaticResource Muted}" />
@@ -680,9 +689,14 @@
                             </Grid.ColumnDefinitions>
                             <Grid Grid.Column="0">
                                 <TextBox x:Name="InputBox" Style="{StaticResource TermInput}" FontFamily="{StaticResource ChatFont}" FontSize="{DynamicResource ComposerFontSize}" MinHeight="52" MaxHeight="132" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" IsEnabled="False" KeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged" ToolTip="Enter to send. Shift+Enter for a new line." />
-                                <TextBlock x:Name="InputPlaceholder" Margin="18,14,18,0" VerticalAlignment="Top" Foreground="{StaticResource Dim}" FontSize="{DynamicResource ComposerPlaceholderFontSize}" Opacity="0.82" IsHitTestVisible="False" Text="Choose a conversation to start chatting" />
+                                <TextBlock x:Name="InputPlaceholder" Margin="18,0,18,0" VerticalAlignment="Center" Foreground="{StaticResource Dim}" FontSize="{DynamicResource ComposerPlaceholderFontSize}" Opacity="0.82" IsHitTestVisible="False" Text="Choose a conversation to start chatting" />
                             </Grid>
-                            <Button x:Name="BtnEmojiPicker" Grid.Column="1" Margin="10,0,0,0" Padding="10,10" FontSize="16" Content="🙂" Style="{StaticResource TermBtn}" Click="BtnEmojiPicker_Click" ToolTip="Open OpenMoji picker" />
+                            <Button x:Name="BtnEmojiPicker" Grid.Column="1" Margin="10,0,0,0" Padding="10,10" FontSize="16" Style="{StaticResource TermBtn}" Click="BtnEmojiPicker_Click" ToolTip="Open OpenMoji picker">
+                                <Image Width="20"
+                                       Height="20"
+                                       Stretch="Uniform"
+                                       Source="pack://application:,,,/Assets/OpenMoji/1F60A.png" />
+                            </Button>
                             <Button x:Name="BtnSend" Grid.Column="2" Margin="10,0,0,0" Padding="18,10" FontSize="13" Content="Send" IsEnabled="False" Style="{StaticResource AccentBtn}" Click="BtnSend_Click" />
                             <Popup x:Name="EmojiPopup" Placement="Top" PlacementTarget="{Binding ElementName=BtnEmojiPicker}" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
                                 <Border Padding="10" Width="320" Height="220" CornerRadius="12" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1">

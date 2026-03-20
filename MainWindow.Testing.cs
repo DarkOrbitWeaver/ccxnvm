@@ -47,7 +47,6 @@ public partial class MainWindow {
         SetAutomationId(BtnOpenNukeOverlay, "BtnOpenNukeOverlay");
         SetAutomationId(BtnSettings, "BtnSettings");
         SetAutomationId(ConvList, "ConversationList");
-        SetAutomationId(SidebarStatus, "SidebarStatus");
         SetAutomationId(EmptyState, "EmptyState");
         SetAutomationId(MessageList, "MessageList");
         SetAutomationId(LoadMoreBar, "LoadMoreBar");

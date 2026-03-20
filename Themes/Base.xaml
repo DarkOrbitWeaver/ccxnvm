@@ -399,10 +399,14 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <TabPanel Grid.Row="0"
-                                  Margin="0,0,0,14"
-                                  IsItemsHost="True"
-                                  Background="Transparent" />
+                        <ScrollViewer Grid.Row="0"
+                                      Margin="0,0,0,14"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Disabled"
+                                      CanContentScroll="False"
+                                      Focusable="False">
+                            <WrapPanel IsItemsHost="True" />
+                        </ScrollViewer>
                         <Border Grid.Row="1"
                                 Padding="18"
                                 CornerRadius="18"
@@ -422,15 +426,16 @@
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="FontWeight" Value="SemiBold" />
-        <Setter Property="Margin" Value="0,0,10,0" />
+        <Setter Property="MinWidth" Value="112" />
+        <Setter Property="Margin" Value="0,0,10,10" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TabItem">
                     <Border x:Name="bd"
-                            Padding="14,8"
-                            CornerRadius="12"
-                            Background="#50162840"
-                            BorderBrush="{StaticResource Border}"
+                            Padding="16,10"
+                            CornerRadius="16"
+                            Background="#3D162840"
+                            BorderBrush="{DynamicResource GlassBorder}"
                             BorderThickness="1">
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
@@ -438,13 +443,13 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource ConversationSelected}" />
-                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource AccentButtonFill}" />
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentButtonHoverBorder}" />
                             <Setter Property="Foreground" Value="{StaticResource White}" />
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="bd" Property="Background" Value="#641D324C" />
-                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource ConversationSelected}" />
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentButtonBorder}" />
                             <Setter Property="Foreground" Value="{StaticResource White}" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">

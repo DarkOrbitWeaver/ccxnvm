@@ -8,7 +8,9 @@ public sealed record AppShellPreferences(
     bool CloseToTrayOnClose = true,
     bool StartWithWindows = true,
     bool StartHiddenOnStartup = true,
-    int StartupDelaySeconds = 60
+    int StartupDelaySeconds = 60,
+    string ThemeFile = "Theme.Teal.xaml",
+    double ChatFontSize = 17d
 );
 
 public static class AppShellPreferencesStore {
@@ -61,8 +63,19 @@ public static class AppShellPreferencesStore {
         else if (delay is > 30 and <= 60) delay = 60;
         else if (delay > 60) delay = 60;
 
+        var themeFile = string.IsNullOrWhiteSpace(preferences.ThemeFile)
+            ? "Theme.Teal.xaml"
+            : preferences.ThemeFile;
+
+        var chatFontSize = preferences.ChatFontSize;
+        if (chatFontSize <= 15.5) chatFontSize = 15d;
+        else if (chatFontSize <= 18d) chatFontSize = 17d;
+        else chatFontSize = 19d;
+
         return preferences with {
-            StartupDelaySeconds = delay
+            StartupDelaySeconds = delay,
+            ThemeFile = themeFile,
+            ChatFontSize = chatFontSize
         };
     }
 }

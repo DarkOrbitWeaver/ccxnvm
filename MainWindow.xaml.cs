@@ -335,6 +335,8 @@ public partial class MainWindow : Window {
         InitializeComponent();
         AppLog.Info("ui", "main window initialized");
         InitializeShellPreferences();
+        ApplyTheme(_shellPreferences.ThemeFile, persist: false);
+        ApplyChatFontSize(_shellPreferences.ChatFontSize, persist: false);
         ApplyBranding();
         ApplyUxPolish();
         InitializeDesktopNotifications();
@@ -627,10 +629,16 @@ public partial class MainWindow : Window {
     void SetConversationSurfaceState(bool hasConversation) {
         if (ActiveConvName != null && !hasConversation)
             ActiveConvName.Text = "No conversation selected";
+        if (ActiveConvName != null)
+            ActiveConvName.Foreground = hasConversation
+                ? (Brush)FindResource("White")
+                : (Brush)FindResource("Muted");
         if (EmptyState != null)
             EmptyState.Visibility = hasConversation ? Visibility.Collapsed : Visibility.Visible;
         if (MessageList != null)
             MessageList.Visibility = hasConversation ? Visibility.Visible : Visibility.Collapsed;
+        if (ConversationActionsBar != null)
+            ConversationActionsBar.Visibility = hasConversation ? Visibility.Visible : Visibility.Collapsed;
         if (ComposerPanel != null)
             ComposerPanel.Visibility = Visibility.Visible;
         if (InputBox != null) {
@@ -925,8 +933,16 @@ public partial class MainWindow : Window {
         }
 
         _activeThemeFile = themeFile;
-        if (persist && _vault.IsOpen)
-            _vault.SetSetting(UiThemeSettingKey, themeFile);
+        if (persist) {
+            try {
+                _shellPreferences = AppShellPreferencesStore.Sanitize(_shellPreferences with {
+                    ThemeFile = themeFile
+                });
+                AppShellPreferencesStore.Save(_shellPreferences);
+            } catch (Exception ex) {
+                AppLog.Warn("theme", $"failed to persist theme: {ex.Message}");
+            }
+        }
 
         UpdateThemeButtonStates();
         _settingsWindow?.ApplyThemeSelection(themeFile);
@@ -934,15 +950,15 @@ public partial class MainWindow : Window {
     }
 
     void ApplySavedChatFontSize() {
-        var fontSize = DefaultChatFontSize;
-        if (_vault.IsOpen) {
-            var raw = _vault.GetSetting(UiChatFontSizeSettingKey);
-            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)) {
+        var fontSize = _shellPreferences.ChatFontSize;
+        if (Math.Abs(fontSize - DefaultChatFontSize) < 0.01 && _vault.IsOpen) {
+            var legacyRaw = _vault.GetSetting(UiChatFontSizeSettingKey);
+            if (double.TryParse(legacyRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)) {
                 fontSize = parsed;
             }
         }
 
-        ApplyChatFontSize(fontSize, persist: false);
+        ApplyChatFontSize(fontSize, persist: Math.Abs(_shellPreferences.ChatFontSize - fontSize) >= 0.01);
     }
 
     void ApplyChatFontSize(double fontSize, bool persist = true) {
@@ -957,10 +973,15 @@ public partial class MainWindow : Window {
             resources["ComposerPlaceholderFontSize"] = Math.Max(14d, normalized - 1d);
         }
 
-        if (persist && _vault.IsOpen) {
-            _vault.SetSetting(
-                UiChatFontSizeSettingKey,
-                normalized.ToString("0", CultureInfo.InvariantCulture));
+        if (persist) {
+            try {
+                _shellPreferences = AppShellPreferencesStore.Sanitize(_shellPreferences with {
+                    ChatFontSize = normalized
+                });
+                AppShellPreferencesStore.Save(_shellPreferences);
+            } catch (Exception ex) {
+                AppLog.Warn("theme", $"failed to persist chat font size: {ex.Message}");
+            }
         }
 
         _settingsWindow?.ApplyChatFontSizeSelection(normalized);
@@ -980,10 +1001,17 @@ public partial class MainWindow : Window {
     }
 
     void ApplySavedTheme() {
-        var savedTheme = _vault.IsOpen
-            ? _vault.GetSetting(UiThemeSettingKey) ?? DefaultThemeFile
-            : DefaultThemeFile;
-        ApplyTheme(savedTheme, persist: false);
+        var savedTheme = _shellPreferences.ThemeFile;
+        if (_vault.IsOpen &&
+            (string.IsNullOrWhiteSpace(savedTheme) ||
+             string.Equals(savedTheme, DefaultThemeFile, StringComparison.Ordinal))) {
+            var legacyTheme = _vault.GetSetting(UiThemeSettingKey);
+            if (!string.IsNullOrWhiteSpace(legacyTheme)) {
+                savedTheme = legacyTheme;
+            }
+        }
+
+        ApplyTheme(savedTheme, persist: !string.Equals(savedTheme, _shellPreferences.ThemeFile, StringComparison.Ordinal));
     }
 
     void UpdateThemeButtonStates() {
@@ -1120,8 +1148,7 @@ public partial class MainWindow : Window {
 
         _net.OnError += msg => Dispatcher.InvokeAsync(() => {
             AppLog.Warn("relay", msg);
-            if (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus())
-                SetSidebarStatus($"! {msg}", transientRelay: true);
+            SetSidebarStatus($"! {msg}", transientRelay: true);
         });
     }
 
@@ -1139,47 +1166,29 @@ public partial class MainWindow : Window {
                 ConnDot.Foreground = (Brush)FindResource("Amber");
                 ConnStatusText.Text = "connecting";
                 ConnStatusText.Foreground = (Brush)FindResource("Amber");
-                if (!string.IsNullOrWhiteSpace(detail) &&
-                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus()))
+                if (!string.IsNullOrWhiteSpace(detail))
                     SetSidebarStatus(detail, transientRelay: true);
                 break;
             case RelayConnectionState.Reconnecting:
                 ConnDot.Foreground = (Brush)FindResource("Amber");
                 ConnStatusText.Text = "retrying";
                 ConnStatusText.Foreground = (Brush)FindResource("Amber");
-                if (!string.IsNullOrWhiteSpace(detail) &&
-                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus()))
+                if (!string.IsNullOrWhiteSpace(detail))
                     SetSidebarStatus(detail, transientRelay: true);
                 break;
             default:
                 ConnDot.Foreground = (Brush)FindResource("Red");
                 ConnStatusText.Text = "offline";
                 ConnStatusText.Foreground = (Brush)FindResource("Red");
-                if (!string.IsNullOrWhiteSpace(detail) &&
-                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus()))
+                if (!string.IsNullOrWhiteSpace(detail))
                     SetSidebarStatus(detail, transientRelay: true);
                 break;
         }
     }
 
-    const string TransientRelaySidebarTag = "relay-transient";
-
-    bool HasTransientRelayStatus() =>
-        string.Equals(SidebarStatus.Tag as string, TransientRelaySidebarTag, StringComparison.Ordinal);
-
-    void ClearTransientRelayStatus() {
-        if (!HasTransientRelayStatus()) return;
-        SidebarStatus.Text = "";
-        SidebarStatus.Tag = null;
-    }
+    void ClearTransientRelayStatus() { }
 
     void SetSidebarStatus(string message, bool transientRelay = false) {
-        if (transientRelay) {
-            SidebarStatus.Text = message;
-            SidebarStatus.Tag = TransientRelaySidebarTag;
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(message)) return;
         ShowToast(message, ClassifyToastSeverity(message));
     }
@@ -1738,12 +1747,7 @@ public partial class MainWindow : Window {
 
     void InputBox_TextChanged(object s, TextChangedEventArgs e) {
         UpdateComposerState();
-        if (_activeConv == null || !InputBox.IsEnabled || string.IsNullOrWhiteSpace(InputBox.Text)) {
-            HideTypingIndicator();
-            return;
-        }
-
-        StartTypingIndicator();
+        HideTypingIndicator();
     }
 
     void BtnSend_Click(object s, RoutedEventArgs e) =>
@@ -2856,14 +2860,16 @@ public partial class MainWindow : Window {
 
         GroupMenuPopup.IsOpen = false;
         var action = IsCurrentUserGroupOwner(group)
-            ? $"Leave {group.Name} on this device?\n\nYou created this group. Leaving only removes it locally for you. Use Delete if you want to close it for everyone."
+            ? $"Leave {group.Name} on this device?\n\nYou created this group. Leaving removes it only for you. Use Delete if you want to close it for everyone."
             : $"Leave {group.Name} on this device?\n\nThis only removes the group from this local app.";
-        var confirm = MessageBox.Show(
+        var confirm = ActionConfirmWindow.Show(
+            this,
+            $"Leave {group.Name}?",
             action,
-            "Leave Group",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+            "Leave group",
+            "You can still delete the whole group later if you are the owner.",
+            destructive: false);
+        if (!confirm) return;
 
         await Task.CompletedTask;
         RemoveGroupLocally(group.GroupId, $"left {group.Name}");
@@ -2880,12 +2886,14 @@ public partial class MainWindow : Window {
         }
 
         GroupMenuPopup.IsOpen = false;
-        var confirm = MessageBox.Show(
+        var confirm = ActionConfirmWindow.Show(
+            this,
+            $"Delete {group.Name}?",
             $"Delete {group.Name} for all current members?\n\nThey will stop seeing it once your delete notice reaches them.",
-            "Delete Group",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.Yes) return;
+            "Delete group",
+            "This sends a group deletion notice to the current members.",
+            destructive: true);
+        if (!confirm) return;
 
         await SendGroupDeleteNoticeAsync(group);
         RemoveGroupLocally(group.GroupId, $"deleted {group.Name}");

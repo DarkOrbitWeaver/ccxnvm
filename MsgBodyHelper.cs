@@ -57,6 +57,10 @@ public static class MsgBodyHelper {
     }
 
     static FlowDocument BuildDocument(MessageViewModel? vm, double fontSize) {
+        var text = vm?.Content ?? "";
+        var emojiOnly = IsEmojiOnlyMessage(text);
+        var effectiveFontSize = emojiOnly ? fontSize * 2d : fontSize;
+
         var doc = new FlowDocument {
             PagePadding = new Thickness(0),
             Background = System.Windows.Media.Brushes.Transparent,
@@ -65,10 +69,9 @@ public static class MsgBodyHelper {
 
         var paragraph = new Paragraph {
             Margin = new Thickness(0),
-            LineHeight = fontSize * 1.35
+            LineHeight = emojiOnly ? effectiveFontSize * 1.08 : effectiveFontSize * 1.35
         };
 
-        var text = vm?.Content ?? "";
         var textBrush = vm?.TextBrush ?? System.Windows.Media.Brushes.White;
         var textFont = Application.Current?.TryFindResource("ChatFont") as FontFamily
             ?? new FontFamily("Segoe UI");
@@ -79,7 +82,7 @@ public static class MsgBodyHelper {
             var element = enumerator.GetTextElement();
             if (LooksLikeEmoji(element)) {
                 FlushPlainText();
-                paragraph.Inlines.Add(BuildEmojiInline(element, fontSize));
+                paragraph.Inlines.Add(BuildEmojiInline(element, effectiveFontSize, emojiOnly));
             } else {
                 plainText.Append(element);
             }
@@ -94,14 +97,14 @@ public static class MsgBodyHelper {
             paragraph.Inlines.Add(new Run(plainText.ToString()) {
                 Foreground = textBrush,
                 FontFamily = textFont,
-                FontSize = fontSize
+                FontSize = effectiveFontSize
             });
             plainText.Clear();
         }
     }
 
-    static Inline BuildEmojiInline(string element, double fontSize) {
-        if (TryCreateEmojiImage(element, fontSize, out var image)) {
+    static Inline BuildEmojiInline(string element, double fontSize, bool emojiOnly) {
+        if (TryCreateEmojiImage(element, fontSize, emojiOnly, out var image)) {
             return new InlineUIContainer(image) {
                 BaselineAlignment = BaselineAlignment.Center
             };
@@ -113,7 +116,7 @@ public static class MsgBodyHelper {
         };
     }
 
-    static bool TryCreateEmojiImage(string element, double fontSize, out Image image) {
+    static bool TryCreateEmojiImage(string element, double fontSize, bool emojiOnly, out Image image) {
         image = null!;
         if (!EmojiEntries.TryGetValue(element, out var entry)) {
             return false;
@@ -124,15 +127,40 @@ public static class MsgBodyHelper {
             return false;
         }
 
-        var size = fontSize + 3;
+        var size = emojiOnly ? fontSize : Math.Max(fontSize, fontSize * 1.12);
         image = new Image {
             Source = source,
             Width = size,
             Height = size,
             Stretch = Stretch.Uniform,
-            Margin = new Thickness(0, -1, 0, -3)
+            Margin = emojiOnly
+                ? new Thickness(0, -2, 0, -4)
+                : new Thickness(0, -1, 0, -3)
         };
         return true;
+    }
+
+    static bool IsEmojiOnlyMessage(string text) {
+        if (string.IsNullOrWhiteSpace(text)) {
+            return false;
+        }
+
+        var sawEmoji = false;
+        var enumerator = StringInfo.GetTextElementEnumerator(text);
+        while (enumerator.MoveNext()) {
+            var element = enumerator.GetTextElement();
+            if (string.IsNullOrWhiteSpace(element)) {
+                continue;
+            }
+
+            if (!LooksLikeEmoji(element)) {
+                return false;
+            }
+
+            sawEmoji = true;
+        }
+
+        return sawEmoji;
     }
 
     static ImageSource? GetEmojiImageSource(OpenMojiEntry entry) {

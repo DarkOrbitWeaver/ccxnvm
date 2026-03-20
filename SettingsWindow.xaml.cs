@@ -44,7 +44,7 @@ public partial class SettingsWindow : Window {
                 : Brushes.Transparent;
         }
 
-        ThemeHintText.Text = $"Current theme: {ThemeLabel(themeFile)}. Applies and saves instantly to this vault.";
+        ThemeHintText.Text = $"Current theme: {ThemeLabel(themeFile)}. Applies and saves instantly on this device.";
     }
 
     public void ApplyChatFontSizeSelection(double fontSize) {

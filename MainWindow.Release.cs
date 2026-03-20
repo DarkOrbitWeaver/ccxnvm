@@ -40,8 +40,7 @@ public partial class MainWindow {
             ? Visibility.Visible
             : Visibility.Collapsed;
 
-        if (snapshot.State == AppUpdateState.ReadyToRestart &&
-            (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus())) {
+        if (snapshot.State == AppUpdateState.ReadyToRestart) {
             SetSidebarStatus("update ready: restart when you're done chatting");
         }
 
