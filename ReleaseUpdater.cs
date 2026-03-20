@@ -107,7 +107,10 @@ public sealed class ReleaseUpdater {
                 100)
             : backend.IsAvailable
                 ? new AppUpdateSnapshot(AppUpdateState.Idle, "auto-update ready", backend.CurrentVersion)
-                : new AppUpdateSnapshot(AppUpdateState.Disabled, "installer updates only work in packaged builds", backend.CurrentVersion);
+                : new AppUpdateSnapshot(
+                    AppUpdateState.Disabled,
+                    backend is DisabledUpdateBackend disabled ? disabled.Reason : "installer updates only work in packaged builds",
+                    backend.CurrentVersion);
     }
 
     public AppUpdateSnapshot Snapshot => _snapshot;
@@ -115,13 +118,20 @@ public sealed class ReleaseUpdater {
     public bool CanRestartToApply => _pending != null;
 
     public static ReleaseUpdater CreateDefault() {
+        if (AppRuntime.DisableUpdater) {
+            return CreateDisabled("updates disabled for test mode");
+        }
+
         try {
             return new ReleaseUpdater(new VelopackUpdateBackend(AppBranding.GitHubRepoUrl));
         } catch (Exception ex) {
             AppLog.Error("update", "failed to initialize updater", ex);
-            return new ReleaseUpdater(new DisabledUpdateBackend(AppInfo.DisplayVersion));
+            return CreateDisabled("updater unavailable");
         }
     }
+
+    public static ReleaseUpdater CreateDisabled(string reason) =>
+        new(new DisabledUpdateBackend(AppInfo.DisplayVersion, reason));
 
     public async Task<AppUpdateSnapshot> CheckForUpdatesAsync(bool interactive, CancellationToken cancellationToken) {
         if (!_backend.IsAvailable) {
@@ -207,12 +217,14 @@ public sealed class ReleaseUpdater {
     }
 
     sealed class DisabledUpdateBackend : IAppUpdateBackend {
-        public DisabledUpdateBackend(string currentVersion) {
+        public DisabledUpdateBackend(string currentVersion, string reason) {
             CurrentVersion = currentVersion;
+            Reason = reason;
         }
 
         public bool IsAvailable => false;
         public string CurrentVersion { get; }
+        public string Reason { get; }
         public PendingAppUpdate? PendingRestart => null;
 
         public void ApplyAndRestart(PendingAppUpdate update) =>

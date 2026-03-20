@@ -17,6 +17,7 @@ var scenarios = new List<(string Name, Func<Task> Run)> {
     ("health endpoints", () => HealthEndpointsAsync(serverUrl)),
     ("direct message round trip", () => DirectMessageRoundTripAsync(serverUrl)),
     ("offline delivery", () => OfflineDeliveryAsync(serverUrl)),
+    ("offline group delivery", () => OfflineGroupDeliveryAsync(serverUrl)),
     ("acked offline messages do not replay", () => AckedOfflineMessagesDoNotReplayAsync(serverUrl)),
     ("direct replay rejection", () => ReplayRejectionAsync(serverUrl)),
     ("group replay rejection", () => GroupReplayRejectionAsync(serverUrl)),
@@ -105,6 +106,44 @@ static async Task OfflineDeliveryAsync(string serverUrl) {
 
     Ensure(decrypted != null && decrypted.Content == "offline hello", "offline queued message did not arrive intact");
     Ensure(await bobClient.AckDmAsync(alice.UserId, envelope.seq), "recipient ack failed");
+}
+
+static async Task OfflineGroupDeliveryAsync(string serverUrl) {
+    var alice = CreateUser(serverUrl, "alice");
+    var bob = CreateUser(serverUrl, "bob");
+    await using var aliceClient = new NetworkClient();
+    await using var bobClient = new NetworkClient();
+
+    await aliceClient.ConnectAsync(alice);
+
+    var groupKey = RandomNumberGenerator.GetBytes(32);
+    var groupId = Guid.NewGuid().ToString("N");
+    var recipients = new List<string> { alice.UserId, bob.UserId };
+    var message = new Message {
+        Id = Guid.NewGuid().ToString("N"),
+        ConversationId = groupId,
+        SenderId = alice.UserId,
+        Content = "offline group hello",
+        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        SeqNum = 1,
+        ConvType = ConversationType.Group
+    };
+    var payload = Crypto.EncryptGroup(groupKey, message);
+    var sig = Crypto.SignPayload(alice.SignPrivKey, payload, message.SeqNum);
+
+    Ensure(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, message.SeqNum), "offline group send failed");
+
+    var received = new TaskCompletionSource<(string groupId, string senderId, string payload, string sig, long seq, long ts)>(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    bobClient.OnGroupMessage += (gid, senderId, body, bodySig, seq, ts) => received.TrySetResult((gid, senderId, body, bodySig, seq, ts));
+
+    await bobClient.ConnectAsync(bob);
+
+    var envelope = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+    var decrypted = Crypto.DecryptGroup(groupKey, envelope.groupId, envelope.senderId, envelope.payload);
+
+    Ensure(decrypted != null && decrypted.Content == "offline group hello", "offline group message did not arrive intact");
+    Ensure(await bobClient.AckGroupAsync(groupId, alice.UserId, envelope.seq), "offline group ack failed");
 }
 
 static async Task AckedOfflineMessagesDoNotReplayAsync(string serverUrl) {

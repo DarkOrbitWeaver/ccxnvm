@@ -10,14 +10,18 @@ public partial class App : Application {
 
     [STAThread]
     static void Main(string[] args) {
+        AppRuntime.Configure(args);
         VelopackApp.Build().Run();
+        AppRuntime.ApplyStartupDelayIfConfigured();
         AppLog.Initialize();
+        AppRuntime.WriteSignal("app-main");
 
         LastStartupHealth = StartupHealth.Run();
         foreach (var warning in LastStartupHealth.Warnings)
             AppLog.Warn("startup", warning);
         foreach (var error in LastStartupHealth.Errors)
             AppLog.Error("startup", error);
+        AppRuntime.WriteSignal("startup-health", LastStartupHealth.IsHealthy ? "ok" : "issues");
 
         var app = new App();
         app.InitializeComponent();
@@ -42,11 +46,17 @@ public partial class App : Application {
         };
 
         Exit += (_, _) => AppLog.Info("app", "shutdown complete");
+        AppRuntime.WriteSignal("startup");
         base.OnStartup(e);
     }
 
     static void HandleException(string area, Exception ex, bool fatal) {
         AppLog.Error(area, fatal ? "fatal unhandled exception" : "unhandled exception", ex);
+        AppRuntime.WriteSignal("exception", $"{area}:{ex.GetType().Name}");
+
+        if (AppRuntime.IsTestMode) {
+            return;
+        }
 
         try {
             MessageBox.Show(

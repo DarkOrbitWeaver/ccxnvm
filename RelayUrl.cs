@@ -7,7 +7,9 @@ public static class RelayUrl {
 
     public static string Normalize(string? serverUrl) {
         var trimmed = serverUrl?.Trim() ?? "";
-        return string.IsNullOrEmpty(trimmed) ? AppBranding.DefaultRelayUrl : trimmed.TrimEnd('/');
+        return string.IsNullOrEmpty(trimmed)
+            ? AppRuntime.EffectiveDefaultRelayUrl
+            : AppBranding.ResolveRelayUrl(trimmed);
     }
 
     public static bool IsValid(string serverUrl) {

@@ -10,6 +10,7 @@ namespace Cipher;
 
 public static class AppPaths {
     public static string AppDataRoot =>
+        AppRuntime.AppDataRootOverride ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             AppBranding.AppDataFolder);
 
@@ -172,7 +173,7 @@ public static class StartupHealth {
             errors.Add($"app-data folder is not writable: {ex.Message}");
         }
 
-        if (!RelayUrl.IsValid(AppBranding.DefaultRelayUrl)) {
+        if (!RelayUrl.IsValid(AppRuntime.EffectiveDefaultRelayUrl)) {
             errors.Add("default relay URL is invalid.");
         }
 

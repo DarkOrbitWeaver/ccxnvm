@@ -54,4 +54,22 @@ public class CryptoTests {
         Assert.Equal("a", Crypto.DecryptDm(key, "bob", shortPayload)!.Content);
         Assert.Equal(new string('b', 120), Crypto.DecryptDm(key, "bob", longerPayload)!.Content);
     }
+
+    [Fact]
+    public void EmojiContentRoundTripsWithoutCorruption() {
+        var key = RandomNumberGenerator.GetBytes(32);
+        var source = "hello 😊✨🌸🚀";
+        var message = new Message {
+            Id = "emoji-case",
+            Content = source,
+            SeqNum = 42,
+            Timestamp = 100
+        };
+
+        var payload = Crypto.EncryptDm(key, message);
+        var decrypted = Crypto.DecryptDm(key, "alice", payload);
+
+        Assert.NotNull(decrypted);
+        Assert.Equal(source, decrypted!.Content);
+    }
 }

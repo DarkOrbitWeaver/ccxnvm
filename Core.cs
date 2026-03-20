@@ -19,7 +19,7 @@ namespace Cipher;
 // ═══════════════════════════════════════════════════════════════════════════
 //  MODELS
 // ═══════════════════════════════════════════════════════════════════════════
-public enum MessageStatus { Sending, Sent, Delivered, Failed }
+public enum MessageStatus { Sending, Sent, Delivered, Seen, Failed }
 public enum ConversationType { Direct, Group }
 
 public class LocalUser {
@@ -383,12 +383,10 @@ public partial class Vault : IDisposable {
     bool _disposed;
 
     public static string DefaultVaultPath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            AppBranding.AppDataFolder, "vault.db");
+        Path.Combine(AppPaths.AppDataRoot, "vault.db");
 
     public static string SaltPath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            AppBranding.AppDataFolder, "vault.salt");
+        Path.Combine(AppPaths.AppDataRoot, "vault.salt");
 
     public bool IsOpen { get; private set; }
 
@@ -459,6 +457,14 @@ public partial class Vault : IDisposable {
                 sig_enc TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, timestamp);
+            CREATE TABLE IF NOT EXISTS message_receipts (
+                message_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                status INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (message_id, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_receipts_message ON message_receipts(message_id);
             CREATE TABLE IF NOT EXISTS conv_state (
                 conversation_id TEXT PRIMARY KEY,
                 last_seq INTEGER NOT NULL DEFAULT 0,
@@ -667,7 +673,14 @@ public partial class Vault : IDisposable {
     }
 
     public void UpdateMessageStatus(string messageId, MessageStatus status) =>
-        ExecParam("UPDATE messages SET status=@st WHERE id=@id",
+        ExecParam("""
+            UPDATE messages
+            SET status = CASE
+                WHEN status > @st THEN status
+                ELSE @st
+            END
+            WHERE id=@id
+            """,
             ("st", (int)status), ("id", messageId));
 
     public bool MessageExists(string messageId) {
@@ -675,6 +688,63 @@ public partial class Vault : IDisposable {
         cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE id=@id";
         cmd.Parameters.AddWithValue("id", messageId);
         return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+    }
+
+    public void UpsertMessageReceipt(string messageId, string userId, MessageStatus status, long? updatedAt = null) {
+        if (status is not MessageStatus.Delivered and not MessageStatus.Seen) {
+            return;
+        }
+
+        var ts = updatedAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        ExecParam("""
+            INSERT INTO message_receipts (message_id, user_id, status, updated_at)
+            VALUES (@mid, @uid, @status, @ts)
+            ON CONFLICT(message_id, user_id) DO UPDATE SET
+                status = CASE
+                    WHEN message_receipts.status > excluded.status THEN message_receipts.status
+                    ELSE excluded.status
+                END,
+                updated_at = CASE
+                    WHEN message_receipts.status > excluded.status THEN message_receipts.updated_at
+                    ELSE excluded.updated_at
+                END
+            """,
+            ("mid", messageId),
+            ("uid", userId),
+            ("status", (int)status),
+            ("ts", ts));
+    }
+
+    public List<MessageReceipt> LoadMessageReceipts(IEnumerable<string> messageIds) {
+        var ids = messageIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (ids.Count == 0) return [];
+
+        using var cmd = _db!.CreateCommand();
+        var placeholders = new List<string>(ids.Count);
+        for (var i = 0; i < ids.Count; i++) {
+            var paramName = "@id" + i;
+            placeholders.Add(paramName);
+            cmd.Parameters.AddWithValue(paramName, ids[i]);
+        }
+
+        cmd.CommandText = $@"
+            SELECT message_id, user_id, status, updated_at
+            FROM message_receipts
+            WHERE message_id IN ({string.Join(",", placeholders)})";
+
+        var list = new List<MessageReceipt>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) {
+            list.Add(new MessageReceipt(
+                r.GetString(r.GetOrdinal("message_id")),
+                r.GetString(r.GetOrdinal("user_id")),
+                (MessageStatus)r.GetInt32(r.GetOrdinal("status")),
+                r.GetInt64(r.GetOrdinal("updated_at"))));
+        }
+        return list;
     }
 
     // ── Conversation state & shared secrets ────────────────────────────────
@@ -862,6 +932,8 @@ public record OutboxItem(
     string Id, string RecipientId, string Payload, string Sig, long SeqNum,
     ConversationType ConvType, string? GroupId, List<string>? MemberIds);
 
+public record MessageReceipt(string MessageId, string UserId, MessageStatus Status, long UpdatedAt);
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  SESSION MANAGER — Stay logged in via Windows DPAPI
 //  DPAPI is tied to the Windows user account. Other Windows users cannot
@@ -869,8 +941,7 @@ public record OutboxItem(
 // ═══════════════════════════════════════════════════════════════════════════
 public static class Session {
     static string SessionFile =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            AppBranding.AppDataFolder, "session.bin");
+        Path.Combine(AppPaths.AppDataRoot, "session.bin");
 
     /// <summary>
     /// Save vault key protected by DPAPI (current Windows user only).
@@ -912,6 +983,7 @@ public static class Session {
 public enum RelayConnectionState { Disconnected, Connecting, Reconnecting, Connected }
 
 public class NetworkClient : IAsyncDisposable {
+    static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(12);
     HubConnection? _hub;
     LocalUser? _user;
     readonly SemaphoreSlim _connectGate = new(1, 1);
@@ -931,13 +1003,17 @@ public class NetworkClient : IAsyncDisposable {
     public event Action<RelayConnectionState, string?>? OnStateChanged;
 
     public async Task ConnectAsync(LocalUser user) {
+        var started = AppTelemetry.StartTimer();
         _user = user;
         var serverUrl = RelayUrl.Normalize(user.ServerUrl);
+        var hubUrl = serverUrl.TrimEnd('/') + "/hub";
 
         if (!RelayUrl.IsValid(serverUrl)) {
             OnError?.Invoke(RelayUrl.ValidationHint);
             return;
         }
+
+        AppLog.Info("relay", $"connect requested user={AppTelemetry.MaskUserId(user.UserId)} relay={AppTelemetry.DescribeRelay(serverUrl)} hub={hubUrl}");
 
         if (_hub != null) {
             await _hub.DisposeAsync();
@@ -945,7 +1021,7 @@ public class NetworkClient : IAsyncDisposable {
         }
 
         _hub = new HubConnectionBuilder()
-            .WithUrl(serverUrl.TrimEnd('/') + "/hub")
+            .WithUrl(hubUrl)
             .WithAutomaticReconnect(new[] {
                 TimeSpan.Zero,
                 TimeSpan.FromSeconds(2),
@@ -967,12 +1043,14 @@ public class NetworkClient : IAsyncDisposable {
         _hub.On<string>("UserOnline", uid => OnUserOnline?.Invoke(uid));
 
         _hub.Reconnecting += ex => {
+            AppLog.Warn("relay", $"signalr reconnecting - {AppTelemetry.DescribeException(ex ?? new Exception("connection lost"))}");
             RaiseState(RelayConnectionState.Reconnecting, "relay connection lost - retrying...");
             OnDisconnected?.Invoke();
             return Task.CompletedTask;
         };
 
         _hub.Reconnected += async connectionId => {
+            AppLog.Info("relay", $"signalr reconnected connection_id={connectionId ?? "-"}");
             await RegisterAsync();
             _retryAttempt = 0;
             RaiseState(RelayConnectionState.Connected, "relay connected");
@@ -981,6 +1059,11 @@ public class NetworkClient : IAsyncDisposable {
 
         _hub.Closed += ex => {
             if (_disposed || _lifetimeCts.IsCancellationRequested) return Task.CompletedTask;
+            if (ex != null) {
+                AppLog.Warn("relay", $"signalr closed - {AppTelemetry.DescribeException(ex)}");
+            } else {
+                AppLog.Warn("relay", "signalr closed without exception");
+            }
             RaiseState(RelayConnectionState.Disconnected, "relay offline - retrying in background...");
             OnDisconnected?.Invoke();
             EnsureRetryLoop();
@@ -990,25 +1073,33 @@ public class NetworkClient : IAsyncDisposable {
         RaiseState(RelayConnectionState.Connecting, "connecting to relay...");
         _heartbeatLoop ??= RunHeartbeatLoopAsync();
         await EnsureConnectedAsync(fromRetryLoop: false, _lifetimeCts.Token);
+        if (IsConnected) {
+            AppLog.Info("relay", $"initial connect completed in {AppTelemetry.ElapsedMilliseconds(started)}ms");
+        }
     }
 
     /// <summary>Re-register keys with server after connect/reconnect.</summary>
     async Task RegisterAsync() {
         if (_hub == null || _user == null) return;
+        var started = AppTelemetry.StartTimer();
         var dhPubKey = Convert.ToBase64String(_user.DhPubKey);
         var selfSig = Crypto.SignRegistration(_user.SignPrivKey, _user.UserId, dhPubKey);
+        AppLog.Info("relay", $"register begin user={AppTelemetry.MaskUserId(_user.UserId)}");
         await _hub.InvokeAsync("Register",
             _user.UserId,
             Convert.ToBase64String(_user.SignPubKey),
             dhPubKey,
             selfSig);
+        AppLog.Info("relay", $"registered relay identity for {AppTelemetry.MaskUserId(_user.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
     }
 
     /// <summary>Send encrypted message to a single user.</summary>
     public async Task<bool> SendDmAsync(string recipientId, string payload, string sig, long seqNum) {
         if (!IsConnected) return false;
+        var started = AppTelemetry.StartTimer();
         try {
             await _hub!.InvokeAsync("Send", recipientId, payload, sig, seqNum);
+            AppLog.Info("relay", $"direct relay send ok recipient={AppTelemetry.MaskUserId(recipientId)} seq={seqNum} bytes={payload.Length} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         } catch (Exception ex) {
             AppLog.Warn("relay", $"direct send failed: {ex.Message}");
@@ -1021,8 +1112,10 @@ public class NetworkClient : IAsyncDisposable {
     public async Task<bool> SendGroupAsync(string groupId, List<string> recipientIds,
         string payload, string sig, long seqNum) {
         if (!IsConnected) return false;
+        var started = AppTelemetry.StartTimer();
         try {
             await _hub!.InvokeAsync("SendGroup", groupId, recipientIds, payload, sig, seqNum);
+            AppLog.Info("relay", $"group relay send ok group={AppTelemetry.MaskUserId(groupId)} seq={seqNum} recipients={recipientIds.Count} bytes={payload.Length} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         } catch (Exception ex) {
             AppLog.Warn("relay", $"group send failed: {ex.Message}");
@@ -1034,35 +1127,44 @@ public class NetworkClient : IAsyncDisposable {
     /// <summary>Fetch a user's public keys from the relay (for new contacts).</summary>
     public async Task<(byte[] signPub, byte[] dhPub)?> GetUserKeysAsync(string userId) {
         if (!IsConnected) return null;
+        var started = AppTelemetry.StartTimer();
         try {
             var result = await _hub!.InvokeAsync<KeyBundleDto?>("GetKeys", userId);
-            if (result == null) return null;
+            if (result == null) {
+                AppLog.Warn("relay", $"key lookup miss for {AppTelemetry.MaskUserId(userId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
+                return null;
+            }
+            AppLog.Info("relay", $"key lookup ok for {AppTelemetry.MaskUserId(userId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return (Convert.FromBase64String(result.SignPubKey),
                     Convert.FromBase64String(result.DhPubKey));
         } catch (Exception ex) {
-            AppLog.Warn("relay", $"key lookup failed for {userId}: {ex.Message}");
+            AppLog.Warn("relay", $"key lookup failed for {AppTelemetry.MaskUserId(userId)}: {ex.Message}");
             return null;
         }
     }
 
     public async Task<bool> AckDmAsync(string senderId, long seqNum) {
         if (!IsConnected) return false;
+        var started = AppTelemetry.StartTimer();
         try {
             await _hub!.InvokeAsync("AckDirect", senderId, seqNum);
+            AppLog.Info("relay", $"direct ack ok sender={AppTelemetry.MaskUserId(senderId)} seq={seqNum} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         } catch (Exception ex) {
-            AppLog.Warn("relay", $"direct ack failed for {senderId}:{seqNum}: {ex.Message}");
+            AppLog.Warn("relay", $"direct ack failed for {AppTelemetry.MaskUserId(senderId)}:{seqNum}: {ex.Message}");
             return false;
         }
     }
 
     public async Task<bool> AckGroupAsync(string groupId, string senderId, long seqNum) {
         if (!IsConnected) return false;
+        var started = AppTelemetry.StartTimer();
         try {
             await _hub!.InvokeAsync("AckGroup", groupId, senderId, seqNum);
+            AppLog.Info("relay", $"group ack ok group={AppTelemetry.MaskUserId(groupId)} sender={AppTelemetry.MaskUserId(senderId)} seq={seqNum} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         } catch (Exception ex) {
-            AppLog.Warn("relay", $"group ack failed for {groupId}/{senderId}:{seqNum}: {ex.Message}");
+            AppLog.Warn("relay", $"group ack failed for {AppTelemetry.MaskUserId(groupId)}/{AppTelemetry.MaskUserId(senderId)}:{seqNum}: {ex.Message}");
             return false;
         }
     }
@@ -1070,7 +1172,11 @@ public class NetworkClient : IAsyncDisposable {
     /// <summary>Announce presence to contacts (so they see us go online).</summary>
     public async Task AnnouncePresenceAsync(List<string> contactIds) {
         if (!IsConnected || contactIds.Count == 0) return;
-        try { await _hub!.InvokeAsync("AnnouncePresence", contactIds); }
+        var started = AppTelemetry.StartTimer();
+        try {
+            await _hub!.InvokeAsync("AnnouncePresence", contactIds);
+            AppLog.Info("relay", $"presence announced to {contactIds.Count} contact(s) in {AppTelemetry.ElapsedMilliseconds(started)}ms");
+        }
         catch (Exception ex) {
             AppLog.Warn("relay", $"presence announcement failed: {ex.Message}");
         }
@@ -1085,17 +1191,29 @@ public class NetworkClient : IAsyncDisposable {
             if (_hub.State is HubConnectionState.Connected or HubConnectionState.Connecting or HubConnectionState.Reconnecting)
                 return;
 
-            await _hub.StartAsync(cancellationToken);
+            var started = AppTelemetry.StartTimer();
+            AppLog.Info("relay", $"hub start begin mode={(fromRetryLoop ? "retry" : "initial")} timeout={(int)ConnectTimeout.TotalSeconds}s state={_hub.State}");
+
+            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            connectCts.CancelAfter(ConnectTimeout);
+
+            try {
+                await _hub.StartAsync(connectCts.Token);
+            } catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && connectCts.IsCancellationRequested) {
+                throw new TimeoutException($"relay connect timed out after {(int)ConnectTimeout.TotalSeconds}s", ex);
+            }
+
             await RegisterAsync();
             _retryAttempt = 0;
             RaiseState(RelayConnectionState.Connected, "relay connected");
+            AppLog.Info("relay", $"hub start ok mode={(fromRetryLoop ? "retry" : "initial")} in {AppTelemetry.ElapsedMilliseconds(started)}ms state={_hub.State}");
             OnConnected?.Invoke();
         } catch (OperationCanceledException) {
         } catch (Exception ex) {
             if (_disposed || _lifetimeCts.IsCancellationRequested) return;
-            AppLog.Warn("relay", $"connection attempt failed: {ex.Message}");
+            AppLog.Warn("relay", $"connection attempt failed mode={(fromRetryLoop ? "retry" : "initial")} state={_hub?.State} error={AppTelemetry.DescribeException(ex)}");
             if (!fromRetryLoop) {
-                OnError?.Invoke("relay unavailable or waking up - retrying in background...");
+                OnError?.Invoke("relay unavailable, blocked, or waking up - retrying in background...");
             }
             RaiseState(RelayConnectionState.Disconnected, "relay unavailable - retrying...");
             EnsureRetryLoop();
@@ -1111,6 +1229,7 @@ public class NetworkClient : IAsyncDisposable {
         _retryLoop = Task.Run(async () => {
             while (!_disposed && !_lifetimeCts.IsCancellationRequested && !IsConnected) {
                 var delay = GetRetryDelay(++_retryAttempt);
+                AppLog.Warn("relay", $"retry loop attempt={_retryAttempt} delay={(int)delay.TotalSeconds}s");
                 RaiseState(RelayConnectionState.Reconnecting, $"relay offline - retrying in {(int)delay.TotalSeconds}s...");
                 try {
                     await Task.Delay(delay, _lifetimeCts.Token);
@@ -1131,8 +1250,10 @@ public class NetworkClient : IAsyncDisposable {
         _ => TimeSpan.FromSeconds(30)
     };
 
-    void RaiseState(RelayConnectionState state, string? detail) =>
+    void RaiseState(RelayConnectionState state, string? detail) {
+        AppLog.Info("relay", $"state={state} detail={detail ?? "-"} hub_state={_hub?.State}");
         OnStateChanged?.Invoke(state, detail);
+    }
 
     async Task RunHeartbeatLoopAsync() {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(12));
@@ -1141,6 +1262,7 @@ public class NetworkClient : IAsyncDisposable {
                 if (_hub == null || _disposed || !IsConnected) continue;
 
                 try {
+                    var started = AppTelemetry.StartTimer();
                     var pingTask = _hub.InvokeAsync<long>("Ping", _lifetimeCts.Token);
                     var completed = await Task.WhenAny(
                         pingTask,
@@ -1149,9 +1271,10 @@ public class NetworkClient : IAsyncDisposable {
                         throw new TimeoutException("Relay heartbeat timed out.");
                     }
                     await pingTask;
+                    AppLog.Info("relay", $"heartbeat ok in {AppTelemetry.ElapsedMilliseconds(started)}ms");
                 } catch (Exception ex) {
                     if (_hub.State != HubConnectionState.Connected) continue;
-                    AppLog.Warn("relay", $"heartbeat failed: {ex.Message}");
+                    AppLog.Warn("relay", $"heartbeat failed: {AppTelemetry.DescribeException(ex)}");
                     RaiseState(RelayConnectionState.Reconnecting, "relay unreachable - retrying...");
                     OnDisconnected?.Invoke();
                     try {

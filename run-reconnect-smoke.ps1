@@ -8,7 +8,10 @@ $serverExe = Join-Path $repoRoot "server\bin\Debug\net9.0\CipherServer.exe"
 $serverDll = Join-Path $repoRoot "server\bin\Debug\net9.0\CipherServer.dll"
 $serverUrl = "http://127.0.0.1:$port"
 $relayDbPath = Join-Path $repoRoot ".publish\relay-reconnect-test.db"
-$probeProject = Join-Path $repoRoot "tools\Cipher.ReconnectProbe\Cipher.ReconnectProbe.csproj"
+$probeExe = Join-Path $repoRoot "tools\Cipher.ReconnectProbe\bin\Debug\net9.0-windows\Cipher.ReconnectProbe.exe"
+$probeDll = Join-Path $repoRoot "tools\Cipher.ReconnectProbe\bin\Debug\net9.0-windows\Cipher.ReconnectProbe.dll"
+
+$env:MSBUILDDISABLENODEREUSE = "1"
 
 function Start-RelayProcess {
     param([string]$DbPath, [int]$RelayPort)
@@ -40,23 +43,24 @@ function Stop-RelayProcess {
 function Start-ProbeProcess {
     param([string]$Mode, [string]$OutputPrefix)
 
-    $stdout = Join-Path $repoRoot ".publish\$OutputPrefix.out.txt"
-    $stderr = Join-Path $repoRoot ".publish\$OutputPrefix.err.txt"
-    if (Test-Path $stdout) { Remove-Item $stdout -Force }
-    if (Test-Path $stderr) { Remove-Item $stderr -Force }
+    if (Test-Path $probeExe) {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new($probeExe, "$Mode $serverUrl")
+    } else {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new("dotnet", "`"$probeDll`" $Mode $serverUrl")
+    }
 
-    $proc = Start-Process -FilePath 'dotnet' `
-        -ArgumentList @('run', '--project', $probeProject, '--no-launch-profile', '--', $Mode, $serverUrl) `
-        -WorkingDirectory $repoRoot `
-        -PassThru `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr
+    $startInfo.WorkingDirectory = $repoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
 
+    $proc = [System.Diagnostics.Process]::Start($startInfo)
     return @{
+        Label = $OutputPrefix
         Process = $proc
-        StdOut = $stdout
-        StdErr = $stderr
+        StdOutTask = $proc.StandardOutput.ReadToEndAsync()
+        StdErrTask = $proc.StandardError.ReadToEndAsync()
     }
 }
 
@@ -71,21 +75,23 @@ function Wait-ProbeSuccess {
     $Probe.Process.WaitForExit()
     $Probe.Process.Refresh()
 
-    $stdout = if (Test-Path $Probe.StdOut) { Get-Content $Probe.StdOut } else { @() }
-    $stderr = if (Test-Path $Probe.StdErr) { Get-Content $Probe.StdErr } else { @() }
+    $stdoutText = $Probe.StdOutTask.GetAwaiter().GetResult()
+    $stderrText = $Probe.StdErrTask.GetAwaiter().GetResult()
 
-    $stdout | Out-Host
-    if ($stderr.Count -gt 0) {
-        $stderr | Out-Host
+    if (-not [string]::IsNullOrWhiteSpace($stdoutText)) {
+        $stdoutText.TrimEnd() | Out-Host
+    }
+    if (-not [string]::IsNullOrWhiteSpace($stderrText)) {
+        $stderrText.TrimEnd() | Out-Host
     }
 
-    if ($stdout -notcontains $SuccessMarker) {
+    if ($stdoutText -notmatch [regex]::Escape($SuccessMarker)) {
         $exitCode = if ($Probe.Process.HasExited) { $Probe.Process.ExitCode } else { "unknown" }
         throw "$Label failed with exit code $exitCode"
     }
 }
 
-dotnet build "$repoRoot\ccxnvm.sln" | Out-Host
+dotnet build "$repoRoot\ccxnvm.sln" /nodeReuse:false | Out-Host
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (Test-Path $relayDbPath) {
@@ -117,4 +123,5 @@ try {
 }
 finally {
     Stop-RelayProcess $relayProc
+    dotnet build-server shutdown | Out-Null
 }

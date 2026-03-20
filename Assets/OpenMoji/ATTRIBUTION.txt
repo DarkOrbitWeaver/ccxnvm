@@ -1,0 +1,9 @@
+OpenMoji assets in this folder come from:
+https://openmoji.org/
+
+Source repository:
+https://github.com/hfg-gmuend/openmoji
+
+License:
+CC BY-SA 4.0
+https://creativecommons.org/licenses/by-sa/4.0/

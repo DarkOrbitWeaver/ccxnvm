@@ -30,6 +30,10 @@
     <Resource Include="$(WindowIcon)" />
   </ItemGroup>
   <ItemGroup>
+    <None Remove="Assets\OpenMoji\*.png" />
+    <Resource Include="Assets\OpenMoji\*.png" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Real-time messaging -->
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="9.0.0" />
     <!-- Encrypted local vault -->

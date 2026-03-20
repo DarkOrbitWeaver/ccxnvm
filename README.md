@@ -75,6 +75,19 @@ Icons already wired:
 
 The app title bar and local `%APPDATA%` storage folder follow the configured product name automatically.
 
+## OpenMoji emoji picker
+
+Cipher now includes a local OpenMoji-based picker in the chat composer.
+
+- picker assets live in `Assets/OpenMoji`
+- selecting an emoji only inserts Unicode text into the message box
+- encryption/signing flow is unchanged (emoji is treated like normal text content)
+
+Licensing:
+
+- OpenMoji graphics are from https://openmoji.org/
+- license: CC BY-SA 4.0
+
 ## Session security
 
 The login/register screens now let you choose whether to remember the vault key on this device.

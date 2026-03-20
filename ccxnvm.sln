@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cipher.SmokeRunner", "tools
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cipher.ReconnectProbe", "tools\Cipher.ReconnectProbe\Cipher.ReconnectProbe.csproj", "{4C3C18F5-168A-4B11-9612-D45D69FF1C61}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cipher.UI.Tests", "tests\Cipher.UI.Tests\Cipher.UI.Tests.csproj", "{C1B0CAFF-6661-4F22-8289-20934328633A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -87,6 +89,18 @@ Global
 		{4C3C18F5-168A-4B11-9612-D45D69FF1C61}.Release|x64.Build.0 = Release|Any CPU
 		{4C3C18F5-168A-4B11-9612-D45D69FF1C61}.Release|x86.ActiveCfg = Release|Any CPU
 		{4C3C18F5-168A-4B11-9612-D45D69FF1C61}.Release|x86.Build.0 = Release|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Debug|x64.Build.0 = Debug|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Debug|x86.Build.0 = Debug|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Release|x64.ActiveCfg = Release|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Release|x64.Build.0 = Release|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Release|x86.ActiveCfg = Release|Any CPU
+		{C1B0CAFF-6661-4F22-8289-20934328633A}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -95,6 +109,7 @@ Global
 		{73C5D571-9E5A-4718-83F4-ADBB40AD3D31} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{5BBE1319-B958-4936-9B9D-067C522E4D8A} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 		{4C3C18F5-168A-4B11-9612-D45D69FF1C61} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{C1B0CAFF-6661-4F22-8289-20934328633A} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {A19C03B2-71F0-469C-93C2-A594A7CF01AC}

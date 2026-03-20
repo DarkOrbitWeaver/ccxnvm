@@ -41,8 +41,8 @@ public partial class MainWindow {
             : Visibility.Collapsed;
 
         if (snapshot.State == AppUpdateState.ReadyToRestart &&
-            (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text))) {
-            SidebarStatus.Text = $"update ready: restart when you're done chatting";
+            (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus())) {
+            SetSidebarStatus("update ready: restart when you're done chatting");
         }
 
         RefreshDiagnosticsSummary();
@@ -72,16 +72,16 @@ public partial class MainWindow {
 
     void ReportVaultMaintenance() {
         if (_vault.LastMaintenanceActions.Count == 0) return;
-        SidebarStatus.Text = string.Join(" | ", _vault.LastMaintenanceActions);
+        SetSidebarStatus(string.Join(" | ", _vault.LastMaintenanceActions));
         RefreshDiagnosticsSummary();
     }
 
     async Task CheckForUpdatesCoreAsync(bool interactive) {
         var snapshot = await _updater.CheckForUpdatesAsync(interactive, _uiLifetimeCts.Token);
         if (interactive && snapshot.State == AppUpdateState.UpToDate) {
-            SidebarStatus.Text = "you're on the latest stable release";
+            SetSidebarStatus("you're on the latest stable release");
         } else if (interactive && snapshot.State == AppUpdateState.Failed) {
-            SidebarStatus.Text = $"! {snapshot.StatusText}";
+            SetSidebarStatus($"! {snapshot.StatusText}");
         }
     }
 
@@ -132,7 +132,7 @@ public partial class MainWindow {
         }
 
         var bundle = AppLog.CreateDiagnosticsBundle(string.Join(Environment.NewLine, summary));
-        SidebarStatus.Text = $"diagnostics exported: {bundle}";
+        SetSidebarStatus($"diagnostics exported: {bundle}");
         OpenFolder(Path.GetDirectoryName(bundle)!);
     }
 

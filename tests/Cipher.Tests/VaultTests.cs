@@ -10,7 +10,7 @@ public class VaultTests {
         var vaultPath = Path.Combine(tempDir, "vault.db");
         var correctKey = RandomNumberGenerator.GetBytes(32);
         var wrongKey = RandomNumberGenerator.GetBytes(32);
-        var user = CreateUser("https://cipher-relay.onrender.com", "alice");
+        var user = CreateUser(AppBranding.DefaultRelayUrl, "alice");
 
         using (var vault = new Vault()) {
             vault.Open(vaultPath, correctKey);
@@ -107,6 +107,74 @@ public class VaultTests {
 
         Assert.True(File.Exists(backupPath));
         Assert.False(string.IsNullOrWhiteSpace(vault.LastMaintenanceBackupPath));
+    }
+
+    [Fact]
+    public void GroupCanBePersistedWithOnlyCreatorMember() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+        var ownerId = "owner-001";
+
+        using var vault = new Vault();
+        vault.Open(vaultPath, key);
+        vault.SaveGroup(new GroupInfo {
+            GroupId = "grp-solo",
+            Name = "solo",
+            MemberIds = new List<string> { ownerId },
+            GroupKey = RandomNumberGenerator.GetBytes(32),
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        });
+
+        var groups = vault.LoadGroups();
+        Assert.Single(groups);
+        Assert.Equal("grp-solo", groups[0].GroupId);
+        Assert.Single(groups[0].MemberIds);
+        Assert.Equal(ownerId, groups[0].MemberIds[0]);
+    }
+
+    [Fact]
+    public void MessageReceiptsPersistAndRemainMonotonic() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            vault.UpsertMessageReceipt("msg-1", "bob", MessageStatus.Delivered, 10);
+            vault.UpsertMessageReceipt("msg-1", "bob", MessageStatus.Seen, 20);
+            vault.UpsertMessageReceipt("msg-1", "bob", MessageStatus.Delivered, 30); // Must not downgrade.
+        }
+
+        using var reopened = new Vault();
+        reopened.Open(vaultPath, key);
+
+        var receipts = reopened.LoadMessageReceipts(new[] { "msg-1" });
+        Assert.Single(receipts);
+        Assert.Equal("msg-1", receipts[0].MessageId);
+        Assert.Equal("bob", receipts[0].UserId);
+        Assert.Equal(MessageStatus.Seen, receipts[0].Status);
+        Assert.Equal(20, receipts[0].UpdatedAt);
+    }
+
+    [Fact]
+    public void LoadMessageReceiptsRespectsRequestedIds() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using var vault = new Vault();
+        vault.Open(vaultPath, key);
+
+        vault.UpsertMessageReceipt("msg-a", "alice", MessageStatus.Delivered, 1);
+        vault.UpsertMessageReceipt("msg-b", "bob", MessageStatus.Seen, 2);
+
+        var onlyB = vault.LoadMessageReceipts(new[] { "msg-b" });
+
+        Assert.Single(onlyB);
+        Assert.Equal("msg-b", onlyB[0].MessageId);
+        Assert.Equal("bob", onlyB[0].UserId);
+        Assert.Equal(MessageStatus.Seen, onlyB[0].Status);
     }
 
     static LocalUser CreateUser(string serverUrl, string displayName) {

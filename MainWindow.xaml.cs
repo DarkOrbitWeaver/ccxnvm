@@ -11,8 +11,10 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace Cipher;
@@ -25,17 +27,21 @@ static class B {
         b.Freeze(); // Frozen = thread-safe + GC-friendly
         return b;
     }
-    public static readonly SolidColorBrush Green      = Make("#00FF41");
-    public static readonly SolidColorBrush DimGreen   = Make("#00882A");
-    public static readonly SolidColorBrush Amber      = Make("#FFB000");
-    public static readonly SolidColorBrush AmberDim   = Make("#FF8800");
-    public static readonly SolidColorBrush AmberText  = Make("#FFD066");
-    public static readonly SolidColorBrush TextGreen  = Make("#00AA22");
-    public static readonly SolidColorBrush Dim        = Make("#444444");
-    public static readonly SolidColorBrush DimName    = Make("#666666");
-    public static readonly SolidColorBrush DimOnline  = Make("#333333");
-    public static readonly SolidColorBrush NameOnline = Make("#AAFFAA");
-    public static readonly SolidColorBrush Red        = Make("#FF3333");
+    public static readonly SolidColorBrush Green      = Make("#6EE7C8");
+    public static readonly SolidColorBrush DimGreen   = Make("#3BAF93");
+    public static readonly SolidColorBrush Amber      = Make("#F6B15F");
+    public static readonly SolidColorBrush AmberDim   = Make("#E09A3C");
+    public static readonly SolidColorBrush AmberText  = Make("#FFD8A6");
+    public static readonly SolidColorBrush TextGreen  = Make("#D8FFF5");
+    public static readonly SolidColorBrush Dim        = Make("#7C8B9F");
+    public static readonly SolidColorBrush DimName    = Make("#B9C6D6");
+    public static readonly SolidColorBrush DimOnline  = Make("#5E6F86");
+    public static readonly SolidColorBrush NameOnline = Make("#EEF5FF");
+    public static readonly SolidColorBrush Red        = Make("#FF6B6B");
+    public static readonly SolidColorBrush Blue       = Make("#7AA2FF");
+    public static readonly SolidColorBrush MineBubble = Make("#2A2444");
+    public static readonly SolidColorBrush PeerBubble = Make("#16333A");
+    public static readonly SolidColorBrush SeenChipBg = Make("#213042");
     public static readonly SolidColorBrush Transparent = Make("#00000000");
 }
 
@@ -77,6 +83,12 @@ public class ConvViewModel : INotifyPropertyChanged {
 
 public class MessageViewModel : INotifyPropertyChanged {
     MessageStatus _status;
+    string _deliveryText = "";
+    Brush _deliveryBrush = B.Dim;
+
+    public MessageViewModel() {
+        SeenBy.CollectionChanged += (_, _) => Notify(nameof(HasSeenBy));
+    }
 
     public string Id             { get; set; } = "";
     public string ConversationId { get; set; } = "";
@@ -86,9 +98,19 @@ public class MessageViewModel : INotifyPropertyChanged {
     public long   Timestamp      { get; set; }
     public long   SeqNum         { get; set; }
     public bool   IsMine         { get; set; }
+    public bool   IsGroup        { get; set; }
+    public ObservableCollection<SeenByChipViewModel> SeenBy { get; } = [];
     public MessageStatus Status {
         get => _status;
-        set { _status = value; Notify(); Notify(nameof(StatusChar)); Notify(nameof(StatusBrush)); }
+        set { _status = value; Notify(); Notify(nameof(StatusChar)); Notify(nameof(StatusBrush)); Notify(nameof(BubbleBorderBrush)); }
+    }
+    public string DeliveryText {
+        get => _deliveryText;
+        set { _deliveryText = value; Notify(); Notify(nameof(HasDeliveryText)); }
+    }
+    public Brush DeliveryBrush {
+        get => _deliveryBrush;
+        set { _deliveryBrush = value; Notify(); }
     }
 
     public string TimeStr    => DateTimeOffset.FromUnixTimeMilliseconds(Timestamp)
@@ -98,6 +120,10 @@ public class MessageViewModel : INotifyPropertyChanged {
     public Brush  TextBrush   => IsMine ? B.AmberText : B.Green;
     public Brush  NameBrush   => IsMine ? B.AmberDim : B.TextGreen;
     public Brush  RowBg       => B.Transparent;
+    public Brush  BubbleBackground => IsMine ? B.MineBubble : B.PeerBubble;
+    public Brush  BubbleBorderBrush => IsMine ? StatusBrush : B.DimGreen;
+    public bool HasSeenBy => SeenBy.Count > 0;
+    public bool HasDeliveryText => !string.IsNullOrWhiteSpace(DeliveryText);
     public string StatusChar  => IsMine ? Status switch {
         MessageStatus.Sending   => "◌",
         MessageStatus.Sent      => "◎",
@@ -105,8 +131,12 @@ public class MessageViewModel : INotifyPropertyChanged {
         MessageStatus.Failed    => "✗",
         _ => ""
     } : "";
-    public Brush StatusBrush => Status == MessageStatus.Failed    ? B.Red  :
-                                 Status == MessageStatus.Delivered ? B.Green : B.Dim;
+    public Brush StatusBrush => Status switch {
+        MessageStatus.Failed => B.Red,
+        MessageStatus.Seen => B.Blue,
+        MessageStatus.Delivered => B.Green,
+        _ => B.Dim
+    };
 
     public event PropertyChangedEventHandler? PropertyChanged;
     void Notify([CallerMemberName] string? p = null) =>
@@ -115,10 +145,21 @@ public class MessageViewModel : INotifyPropertyChanged {
 
 // ── Main Window ───────────────────────────────────────────────────────────────
 
+public sealed class SeenByChipViewModel {
+    public string Name { get; init; } = "";
+    public Brush Color { get; init; } = B.Dim;
+}
+
 record GroupInvitePayload(string GroupId, string Name, string GroupKey, List<string> MemberIds);
+record DeliveryReceiptPayload(string MessageId, string ConversationId, string Scope, string Status, long Ts);
 
 public partial class MainWindow : Window {
     const string GroupInvitePrefix = "[cipher-group-invite]";
+    const string DeliveryReceiptPrefix = "[cipher-receipt]";
+    const string ReceiptScopeDirect = "dm";
+    const string ReceiptScopeGroup = "grp";
+    const string ReceiptStatusReceived = "received";
+    const string ReceiptStatusSeen = "seen";
 
     // ── State ─────────────────────────────────────────────────────────────
     Vault _vault = new();
@@ -143,11 +184,16 @@ public partial class MainWindow : Window {
 
     // Sequence number tracking per sender per conversation (replay protection on client)
     readonly Dictionary<string, Dictionary<string, long>> _seqTracker = [];
+    readonly Dictionary<string, HashSet<string>> _messageReceivedBy = [];
+    readonly Dictionary<string, HashSet<string>> _messageSeenBy = [];
+    readonly Dictionary<string, Brush> _userColorCache = [];
+    readonly HashSet<string> _sentReceiptKeys = [];
 
     // Reconnect outbox flush timer
     DispatcherTimer? _outboxTimer;
     bool _networkEventsWired;
     bool _flushingOutbox;
+    bool _groupInviteMode;
 
     // ── Init ──────────────────────────────────────────────────────────────
 
@@ -155,11 +201,14 @@ public partial class MainWindow : Window {
         InitializeComponent();
         AppLog.Info("ui", "main window initialized");
         ApplyBranding();
+        ApplyUxPolish();
+        InitializeTestingFeatures();
         MessageList.ItemsSource = _messages;
         ConvList.ItemsSource = _convs;
         LoginRememberSession.IsChecked = Session.HasSession();
         RegisterRememberSession.IsChecked = false;
         InitializeReleaseFeatures();
+        InitializeEmojiPicker();
 
         // Hook scroll event for lazy loading (set after list renders)
         MessageList.Loaded += (_, _) => {
@@ -176,6 +225,8 @@ public partial class MainWindow : Window {
         // Try auto-login if session saved
         Loaded += (_, _) => RunUiTask(TryAutoLoginAsync, "startup auto-login", showSidebarErrors: false);
 
+        SetConversationSurfaceState(false);
+
         if (!App.LastStartupHealth.IsHealthy) {
             SetAuthStatus(App.LastStartupHealth.Errors[0], true);
         } else if (App.LastStartupHealth.Warnings.Count > 0) {
@@ -190,12 +241,127 @@ public partial class MainWindow : Window {
         if (VaultStorageHintText != null) VaultStorageHintText.Text = AppBranding.VaultStorageHint;
     }
 
+    void ApplyUxPolish() {
+        BtnSecurityReview.Content = "Verify";
+        BtnSecurityReview.Style = (Style)FindResource("GroupBtn");
+        BtnOpenAddOverlay.Content = "Add Friend";
+        BtnOpenAddOverlay.Style = (Style)FindResource("AccentBtn");
+        BtnOpenAddOverlay.Visibility = Visibility.Collapsed;
+        BtnGroupInvite.Content = "Invite Members";
+        BtnGroupInvite.Style = (Style)FindResource("GroupBtn");
+        BtnGroupInvite.Visibility = Visibility.Collapsed;
+        BtnSideGroupInvite.Content = "Invite";
+        BtnSideGroupInvite.Style = (Style)FindResource("InfoBtn");
+        BtnSettings.Style = (Style)FindResource("InfoBtn");
+        BtnMyId.Style = (Style)FindResource("InfoBtn");
+
+        TabAddDm.Content = "Add Friend";
+        TabAddDm.Style = (Style)FindResource("AccentBtn");
+        TabAddGroup.Content = "New Group";
+        TabAddGroup.Style = (Style)FindResource("GroupBtn");
+    }
+
+    void SetConversationSurfaceState(bool hasConversation) {
+        if (ActiveConvName != null && !hasConversation)
+            ActiveConvName.Text = "No conversation selected";
+        if (EmptyState != null)
+            EmptyState.Visibility = hasConversation ? Visibility.Collapsed : Visibility.Visible;
+        if (MessageList != null)
+            MessageList.Visibility = hasConversation ? Visibility.Visible : Visibility.Collapsed;
+        if (ComposerPanel != null)
+            ComposerPanel.Visibility = Visibility.Visible;
+        if (InputBox != null) {
+            if (hasConversation && string.Equals(InputBox.Text, "Select a conversation to start chatting", StringComparison.Ordinal)) {
+                InputBox.Clear();
+            } else if (!hasConversation && string.IsNullOrWhiteSpace(InputBox.Text)) {
+                InputBox.Text = "Select a conversation to start chatting";
+            }
+            InputBox.IsEnabled = hasConversation;
+        }
+        if (TypingIndicator != null && !hasConversation)
+            TypingIndicator.Visibility = Visibility.Collapsed;
+        if (!hasConversation && EmojiPopup != null)
+            EmojiPopup.IsOpen = false;
+    }
+
+    void InitializeEmojiPicker() {
+        if (EmojiPanel == null) return;
+        EmojiPanel.Children.Clear();
+
+        foreach (var entry in OpenMojiCatalog.Entries) {
+            var button = new Button {
+                Width = 56,
+                Height = 56,
+                Margin = new Thickness(4),
+                Style = (Style)FindResource("TermBtn"),
+                ToolTip = $"{entry.Label} ({entry.Emoji})",
+                Tag = entry
+            };
+
+            var stack = new StackPanel {
+                Orientation = Orientation.Vertical,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+
+            var image = new Image {
+                Width = 24,
+                Height = 24,
+                Stretch = Stretch.Uniform,
+                Margin = new Thickness(0, 0, 0, 2)
+            };
+            try {
+                image.Source = new BitmapImage(new Uri(entry.PackUri, UriKind.Absolute));
+            } catch {
+                image.Visibility = Visibility.Collapsed;
+            }
+
+            stack.Children.Add(image);
+            stack.Children.Add(new TextBlock {
+                Text = entry.Emoji,
+                FontSize = 13,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Foreground = (Brush)FindResource("White")
+            });
+
+            button.Content = stack;
+            button.Click += BtnEmojiSymbol_Click;
+            EmojiPanel.Children.Add(button);
+        }
+    }
+
+    void BtnEmojiPicker_Click(object s, RoutedEventArgs e) {
+        if (_activeConv == null) {
+            SetSidebarStatus("open a conversation first to send emojis");
+            return;
+        }
+        EmojiPopup.IsOpen = !EmojiPopup.IsOpen;
+    }
+
+    void BtnEmojiSymbol_Click(object? sender, RoutedEventArgs e) {
+        if (sender is not Button { Tag: OpenMojiEntry entry }) return;
+        InsertEmoji(entry.Emoji);
+        EmojiPopup.IsOpen = false;
+    }
+
+    void InsertEmoji(string emoji) {
+        if (string.IsNullOrEmpty(emoji)) return;
+        var caret = InputBox.CaretIndex;
+        InputBox.Text = InputBox.Text.Insert(caret, emoji);
+        InputBox.CaretIndex = caret + emoji.Length;
+        InputBox.Focus();
+    }
+
     // ── Auto-login ────────────────────────────────────────────────────────
 
     async Task TryAutoLoginAsync() {
+        var started = AppTelemetry.StartTimer();
+        AppLog.Info("auth", $"startup auth check - vault_exists={System.IO.File.Exists(Vault.DefaultVaultPath)} session_present={Session.HasSession()}");
         if (!System.IO.File.Exists(Vault.DefaultVaultPath)) {
             ShowRegisterTab();
             SetAuthStatus("", false);
+            SignalAuthReady("register");
+            AppLog.Info("auth", "no vault found - showing register screen");
+            await RunTestStartupActionsAsync();
             return;
         }
 
@@ -206,12 +372,20 @@ public partial class MainWindow : Window {
         var sessionKey = Session.TryLoad();
         if (sessionKey != null) {
             SetAuthStatus("unlocking vault...", false);
+            AppLog.Info("auth", "saved session found - attempting auto-login");
             try {
                 _vault.Open(Vault.DefaultVaultPath, sessionKey);
                 _user = _vault.LoadIdentity();
                 if (_user != null) {
+                    var normalizedServerUrl = RelayUrl.Normalize(_user.ServerUrl);
+                    if (!string.Equals(_user.ServerUrl, normalizedServerUrl, StringComparison.Ordinal)) {
+                        AppLog.Info("relay", $"migrated saved relay URL to {AppTelemetry.DescribeRelay(normalizedServerUrl)}");
+                        _user.ServerUrl = normalizedServerUrl;
+                        _vault.SaveIdentity(_user);
+                    }
                     LoginServerUrl.Text = _user.ServerUrl;
                     ReportVaultMaintenance();
+                    AppLog.Info("auth", $"auto-login succeeded for {AppTelemetry.MaskUserId(_user.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
                     await StartChatAsync();
                     return;
                 }
@@ -228,7 +402,14 @@ public partial class MainWindow : Window {
         // Load saved server URL if vault exists
         var saltExists = System.IO.File.Exists(Vault.SaltPath);
         SetAuthStatus(saltExists ? "" : "no vault found — create one", false);
-        if (!saltExists) ShowRegisterTab();
+        if (!saltExists) {
+            ShowRegisterTab();
+            SignalAuthReady("register");
+        } else {
+            SignalAuthReady("login");
+            AppLog.Info("auth", $"vault found without saved session - waiting for manual login after {AppTelemetry.ElapsedMilliseconds(started)}ms");
+        }
+        await RunTestStartupActionsAsync();
     }
 
     // ── Auth handlers ─────────────────────────────────────────────────────
@@ -242,7 +423,8 @@ public partial class MainWindow : Window {
         TabLogin.BorderBrush = (Brush)FindResource("Green");
         TabRegister.BorderBrush = (Brush)FindResource("Border");
         if (string.IsNullOrEmpty(LoginServerUrl.Text))
-            LoginServerUrl.Text = AppBranding.DefaultRelayUrl;
+            LoginServerUrl.Text = AppRuntime.EffectiveDefaultRelayUrl;
+        SignalAuthReady("login");
     }
 
     void ShowRegisterTab() {
@@ -251,7 +433,8 @@ public partial class MainWindow : Window {
         TabRegister.BorderBrush = (Brush)FindResource("Green");
         TabLogin.BorderBrush = (Brush)FindResource("Border");
         if (string.IsNullOrEmpty(RegServerUrl.Text))
-            RegServerUrl.Text = AppBranding.DefaultRelayUrl;
+            RegServerUrl.Text = AppRuntime.EffectiveDefaultRelayUrl;
+        SignalAuthReady("register");
     }
 
     void LoginPass_KeyDown(object s, KeyEventArgs e) {
@@ -265,6 +448,7 @@ public partial class MainWindow : Window {
         });
 
     async Task LoginAsync() {
+        var started = AppTelemetry.StartTimer();
         var pass = LoginPass.Password;
         var serverUrl = RelayUrl.Normalize(LoginServerUrl.Text);
         if (string.IsNullOrEmpty(pass)) { SetAuthStatus("enter password", true); return; }
@@ -273,6 +457,7 @@ public partial class MainWindow : Window {
         if (!RelayUrl.IsValid(serverUrl)) { SetAuthStatus(RelayUrl.ValidationHint, true); return; }
         SetAuthStatus("deriving key (this takes ~2s)...", false);
         BtnLogin.IsEnabled = false;
+        AppLog.Info("auth", $"manual login started - relay={AppTelemetry.DescribeRelay(serverUrl)}");
 
         try {
             var salt = await Task.Run(() => System.IO.File.ReadAllBytes(Vault.SaltPath));
@@ -296,6 +481,7 @@ public partial class MainWindow : Window {
             if (LoginRememberSession.IsChecked == true) Session.Save(key);
             else Session.Clear();
             ReportVaultMaintenance();
+            AppLog.Info("auth", $"manual login succeeded for {AppTelemetry.MaskUserId(_user.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             await StartChatAsync();
         } catch (Exception ex) {
             AppLog.Error("auth", "vault unlock failed", ex);
@@ -313,11 +499,11 @@ public partial class MainWindow : Window {
         });
 
     async Task RegisterAsync() {
+        var started = AppTelemetry.StartTimer();
         var name = RegName.Text.Trim();
         var pass = RegPass.Password;
         var pass2 = RegPass2.Password;
-        var server = RegServerUrl.Text.Trim();
-        var serverUrl = RelayUrl.Normalize(server);
+        var serverUrl = RelayUrl.Normalize(RegServerUrl.Text);
 
         if (string.IsNullOrEmpty(name)) { SetAuthStatus("enter a display name", true); return; }
         if (pass != pass2) { SetAuthStatus("passwords do not match", true); return; }
@@ -326,6 +512,7 @@ public partial class MainWindow : Window {
 
         SetAuthStatus("generating keys & vault (takes ~3s)...", false);
         BtnRegister.IsEnabled = false;
+        AppLog.Info("auth", $"vault creation started - display_name={name} relay={AppTelemetry.DescribeRelay(serverUrl)}");
 
         try {
             // Generate identity
@@ -359,6 +546,7 @@ public partial class MainWindow : Window {
             if (RegisterRememberSession.IsChecked == true) Session.Save(key);
             else Session.Clear();
             ReportVaultMaintenance();
+            AppLog.Info("auth", $"vault creation succeeded for {AppTelemetry.MaskUserId(_user.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             await StartChatAsync();
         } catch (Exception ex) {
             AppLog.Error("auth", "vault creation failed", ex);
@@ -378,12 +566,15 @@ public partial class MainWindow : Window {
     // ── Start chat ────────────────────────────────────────────────────────
 
     async Task StartChatAsync() {
-        AppLog.Info("chat", $"starting session for {_user!.UserId}");
+        _user!.ServerUrl = RelayUrl.Normalize(_user.ServerUrl);
+        AppLog.Info("chat", $"starting session for {AppTelemetry.MaskUserId(_user!.UserId)} via {AppTelemetry.DescribeRelay(_user.ServerUrl)}");
         AuthPanel.Visibility = Visibility.Collapsed;
         ChatPanel.Visibility = Visibility.Visible;
+        SetConversationSurfaceState(false);
 
         // Show user ID in header (truncated)
-        BtnMyId.Content = $"[id: {_user!.UserId[..8]}…]";
+        BtnMyId.Content = $"ID {_user!.UserId[..8]}";
+        UpdateAutomationIdentity();
 
         // Load contacts and groups
         LoadConversations();
@@ -391,6 +582,7 @@ public partial class MainWindow : Window {
         // Connect to relay
         WireNetworkEvents();
         ApplyConnectionState(RelayConnectionState.Connecting, "connecting to relay...");
+        SignalChatReady();
         await _net.ConnectAsync(_user);
     }
 
@@ -414,6 +606,7 @@ public partial class MainWindow : Window {
                 GroupData = g
             });
         }
+        AppLog.Info("chat", $"loaded conversations - direct={contacts.Count} groups={groups.Count}");
     }
 
     // ── Network event wiring ─────────────────────────────────────────────
@@ -461,51 +654,63 @@ public partial class MainWindow : Window {
 
         _net.OnError += msg => Dispatcher.InvokeAsync(() => {
             AppLog.Warn("relay", msg);
-            if (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text))
-                SidebarStatus.Text = $"! {msg}";
+            if (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus())
+                SetSidebarStatus($"! {msg}", transientRelay: true);
         });
     }
 
     void ApplyConnectionState(RelayConnectionState state, string? detail) {
+        SignalRelayState(state, detail);
         ConnDot.Text = "●";
         switch (state) {
             case RelayConnectionState.Connected:
                 ConnDot.Foreground = (Brush)FindResource("Green");
                 ConnStatusText.Text = "online";
                 ConnStatusText.Foreground = (Brush)FindResource("Green");
-                if (IsTransientRelayStatus(SidebarStatus.Text))
-                    SidebarStatus.Text = "";
+                ClearTransientRelayStatus();
                 break;
             case RelayConnectionState.Connecting:
                 ConnDot.Foreground = (Brush)FindResource("Amber");
                 ConnStatusText.Text = "connecting";
                 ConnStatusText.Foreground = (Brush)FindResource("Amber");
                 if (!string.IsNullOrWhiteSpace(detail) &&
-                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text)))
-                    SidebarStatus.Text = detail;
+                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus()))
+                    SetSidebarStatus(detail, transientRelay: true);
                 break;
             case RelayConnectionState.Reconnecting:
                 ConnDot.Foreground = (Brush)FindResource("Amber");
                 ConnStatusText.Text = "retrying";
                 ConnStatusText.Foreground = (Brush)FindResource("Amber");
                 if (!string.IsNullOrWhiteSpace(detail) &&
-                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text)))
-                    SidebarStatus.Text = detail;
+                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus()))
+                    SetSidebarStatus(detail, transientRelay: true);
                 break;
             default:
                 ConnDot.Foreground = (Brush)FindResource("Red");
                 ConnStatusText.Text = "offline";
                 ConnStatusText.Foreground = (Brush)FindResource("Red");
                 if (!string.IsNullOrWhiteSpace(detail) &&
-                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || IsTransientRelayStatus(SidebarStatus.Text)))
-                    SidebarStatus.Text = detail;
+                    (string.IsNullOrWhiteSpace(SidebarStatus.Text) || HasTransientRelayStatus()))
+                    SetSidebarStatus(detail, transientRelay: true);
                 break;
         }
     }
 
-    static bool IsTransientRelayStatus(string text) =>
-        text.StartsWith("relay ", StringComparison.OrdinalIgnoreCase) ||
-        text.StartsWith("! relay ", StringComparison.OrdinalIgnoreCase);
+    const string TransientRelaySidebarTag = "relay-transient";
+
+    bool HasTransientRelayStatus() =>
+        string.Equals(SidebarStatus.Tag as string, TransientRelaySidebarTag, StringComparison.Ordinal);
+
+    void ClearTransientRelayStatus() {
+        if (!HasTransientRelayStatus()) return;
+        SidebarStatus.Text = "";
+        SidebarStatus.Tag = null;
+    }
+
+    void SetSidebarStatus(string message, bool transientRelay = false) {
+        SidebarStatus.Text = message;
+        SidebarStatus.Tag = transientRelay ? TransientRelaySidebarTag : null;
+    }
 
     void RunUiTask(Func<Task> work, string operation,
         bool showSidebarErrors = true, Action<string>? onError = null) {
@@ -517,7 +722,7 @@ public partial class MainWindow : Window {
                 AppLog.Error("ui", $"{operation} failed", ex);
                 var message = FriendlyErrors.ToUserMessage(ex);
                 if (onError != null) onError(message);
-                else if (showSidebarErrors) SidebarStatus.Text = $"! {message}";
+                else if (showSidebarErrors) SetSidebarStatus($"! {message}");
             }
         }).Task;
     }
@@ -530,13 +735,17 @@ public partial class MainWindow : Window {
         if (conv == null) return; // Unknown sender — ignore
 
         var contact = conv.ContactData!;
+        AppLog.Info("recv", $"direct envelope from {AppTelemetry.MaskUserId(senderId)} seq={seq} bytes={payload.Length}");
         if (!await EnsureContactKeysAsync(contact)) return;
 
         // Verify signature (server already checked, client double-checks)
         if (!Crypto.Verify(contact.SignPubKey, $"{payload}:{seq}", sig)) return;
 
         // Replay protection
-        if (!IsNewSeq(conv.Id, contact.UserId, seq)) return;
+        if (!IsNewSeq(conv.Id, contact.UserId, seq)) {
+            await _net.AckDmAsync(senderId, seq);
+            return;
+        }
 
         // Get/derive shared secret
         var convKey = GetOrDeriveConvKey(contact);
@@ -549,24 +758,29 @@ public partial class MainWindow : Window {
         msg.IsMine = false;
         if (TryHandleDirectSystemMessage(contact, msg)) {
             await _net.AckDmAsync(senderId, seq);
+            AppLog.Info("recv", $"processed system direct message from {AppTelemetry.MaskUserId(senderId)} seq={seq}");
             return;
         }
 
         if (_vault.MessageExists(msg.Id)) {
             await _net.AckDmAsync(senderId, seq);
+            AppLog.Warn("recv", $"ignored duplicate direct message {AppTelemetry.MaskUserId(msg.Id)} seq={seq}");
             return;
         }
 
         _vault.SaveMessage(msg);
         await _net.AckDmAsync(senderId, seq);
+        await SendDirectReceiptAsync(contact, msg, ReceiptStatusReceived);
 
         // If this conversation is active, show the message
         if (conv.Id == _activeConvId) {
             var vm = ToViewModel(msg, contact.DisplayName);
             AddMessageToList(vm);
+            await SendDirectReceiptAsync(contact, msg, ReceiptStatusSeen);
         } else {
             conv.UnreadCount++;
         }
+        AppLog.Info("recv", $"stored direct message {AppTelemetry.MaskUserId(msg.Id)} seq={seq} active={(conv.Id == _activeConvId)}");
 
         await Task.CompletedTask;
     }
@@ -580,13 +794,17 @@ public partial class MainWindow : Window {
         if (conv == null) return;
 
         var group = conv.GroupData!;
+        AppLog.Info("recv", $"group envelope group={AppTelemetry.MaskUserId(groupId)} from {AppTelemetry.MaskUserId(senderId)} seq={seq} bytes={payload.Length}");
 
         // Find sender contact for signature verification
         var senderContact = _vault.LoadContacts().FirstOrDefault(c => c.UserId == senderId);
         if (senderContact == null) return;
         if (!await EnsureContactKeysAsync(senderContact)) return;
         if (!Crypto.Verify(senderContact.SignPubKey, $"{actualPayload}:{seq}", sig)) return;
-        if (!IsNewSeq(groupId, senderId, seq)) return;
+        if (!IsNewSeq(groupId, senderId, seq)) {
+            await _net.AckGroupAsync(groupId, senderId, seq);
+            return;
+        }
 
         var msg = Crypto.DecryptGroup(group.GroupKey, groupId, senderId, actualPayload);
         if (msg == null) return;
@@ -595,17 +813,21 @@ public partial class MainWindow : Window {
         msg.IsMine = false;
         if (_vault.MessageExists(msg.Id)) {
             await _net.AckGroupAsync(groupId, senderId, seq);
+            AppLog.Warn("recv", $"ignored duplicate group message {AppTelemetry.MaskUserId(msg.Id)} seq={seq}");
             return;
         }
         _vault.SaveMessage(msg);
         await _net.AckGroupAsync(groupId, senderId, seq);
+        await SendGroupReceiptAsync(senderContact, msg, ReceiptStatusReceived);
 
         if (groupId == _activeConvId) {
             var senderName = senderContact.DisplayName;
             AddMessageToList(ToViewModel(msg, senderName));
+            await SendGroupReceiptAsync(senderContact, msg, ReceiptStatusSeen);
         } else {
             conv.UnreadCount++;
         }
+        AppLog.Info("recv", $"stored group message {AppTelemetry.MaskUserId(msg.Id)} seq={seq} active={(groupId == _activeConvId)}");
 
         await Task.CompletedTask;
     }
@@ -618,24 +840,43 @@ public partial class MainWindow : Window {
     }
 
     void OpenConversation(ConvViewModel conv) {
+        var started = AppTelemetry.StartTimer();
         _activeConv = conv;
         _activeConvId = conv.Id;
         conv.UnreadCount = 0;
 
         ActiveConvName.Text = conv.IsGroup
-            ? $"group: {conv.DisplayName}"
-            : $"dm: {conv.DisplayName} [{conv.ContactData?.UserId[..8]}…]";
+            ? $"Group · {conv.DisplayName}"
+            : $"Direct · {conv.DisplayName} · {conv.ContactData?.UserId[..8]}";
 
-        EmptyState.Visibility = Visibility.Collapsed;
-        MessageList.Visibility = Visibility.Visible;
+        ActiveConvName.Text = conv.IsGroup
+            ? $"Group - {conv.DisplayName}"
+            : $"Direct - {conv.DisplayName} - {conv.ContactData?.UserId[..8]}";
+
+        SetConversationSurfaceState(true);
         UpdateActiveConversationSecurityUi();
         if (InputBox.IsEnabled) InputBox.Focus();
 
         // Load initial messages
         LoadInitialMessages(conv.Id);
+        RunUiTask(MarkActiveConversationSeenAsync, "mark active messages seen", showSidebarErrors: false);
+        AppLog.Info("ui", $"opened {AppTelemetry.DescribeConversation(conv.Id, conv.IsGroup)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
     }
 
     void UpdateActiveConversationSecurityUi() {
+        var groupInviteVisible = _activeConv?.IsGroup == true
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        BtnGroupInvite.Visibility = Visibility.Collapsed;
+        BtnSideGroupInvite.Visibility = groupInviteVisible;
+
+        if (_activeConv == null) {
+            BtnSecurityReview.Visibility = Visibility.Collapsed;
+            InputBox.IsEnabled = false;
+            BtnSend.IsEnabled = false;
+            return;
+        }
+
         if (_activeConv?.ContactData is not Contact contact) {
             BtnSecurityReview.Visibility = Visibility.Collapsed;
             InputBox.IsEnabled = true;
@@ -645,13 +886,14 @@ public partial class MainWindow : Window {
 
         BtnSecurityReview.Visibility = Visibility.Visible;
         if (contact.HasPendingKeyChange) {
-            BtnSecurityReview.Content = "[REVIEW]";
+            BtnSecurityReview.Content = "镜 Review";
             BtnSecurityReview.BorderBrush = (Brush)FindResource("Red");
             BtnSecurityReview.Foreground = (Brush)FindResource("Red");
             BtnSecurityReview.ToolTip = "contact keys changed - review before sending";
             InputBox.IsEnabled = false;
             BtnSend.IsEnabled = false;
-            SidebarStatus.Text = $"security review required: {contact.DisplayName}'s relay keys changed";
+            SetSidebarStatus($"security review required: {contact.DisplayName}'s relay keys changed");
+            BtnSecurityReview.Content = "Review Keys";
             return;
         }
 
@@ -661,12 +903,13 @@ public partial class MainWindow : Window {
         BtnSecurityReview.Foreground = contact.IsVerified
             ? (Brush)FindResource("Green")
             : (Brush)FindResource("Amber");
-        BtnSecurityReview.Content = contact.IsVerified ? "[SAFE]" : "[VERIFY]";
+        BtnSecurityReview.Content = contact.IsVerified ? "镜 Verified" : "镜 Verify";
         BtnSecurityReview.ToolTip = contact.IsVerified
             ? "contact safety number verified"
             : "compare and verify this contact's safety number";
         InputBox.IsEnabled = true;
         BtnSend.IsEnabled = true;
+        BtnSecurityReview.Content = contact.IsVerified ? "Verified" : "Verify";
     }
 
     // ── Lazy message loading ───────────────────────────────────────────────
@@ -677,12 +920,14 @@ public partial class MainWindow : Window {
     /// All other loads are incremental (prepend older).
     /// </summary>
     void LoadInitialMessages(string convId) {
+        var started = AppTelemetry.StartTimer();
         _messages.Clear();
         _msgOffset = 0;
         _msgTotal = _vault.GetMessageCount(convId);
 
         var page = _vault.LoadMessages(convId, 0, 50);
         _msgOffset = page.Count;
+        HydrateReceiptCache(page);
 
         var contacts = _vault.LoadContacts().ToDictionary(c => c.UserId, c => c.DisplayName);
         foreach (var msg in page)
@@ -690,6 +935,7 @@ public partial class MainWindow : Window {
 
         // Scroll to bottom after layout — use Loaded priority to ensure items are rendered
         Dispatcher.InvokeAsync(ScrollToBottom, DispatcherPriority.Loaded);
+        AppLog.Info("history", $"loaded initial page for {AppTelemetry.DescribeConversation(convId, _activeConv?.IsGroup == true)} count={page.Count} total={_msgTotal} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
     }
 
     /// <summary>
@@ -711,6 +957,7 @@ public partial class MainWindow : Window {
 
     async Task LoadOlderMessagesAsync() {
         if (_loadingHistory || _msgOffset >= _msgTotal) return;
+        var started = AppTelemetry.StartTimer();
         _loadingHistory = true;
         LoadMoreBar.Visibility = Visibility.Visible;
 
@@ -720,6 +967,7 @@ public partial class MainWindow : Window {
         // Load on background thread
         var older = await Task.Run(() => _vault.LoadMessages(convId, _msgOffset, 50));
         _msgOffset += older.Count;
+        HydrateReceiptCache(older);
 
         if (older.Count == 0) {
             _loadingHistory = false;
@@ -747,6 +995,7 @@ public partial class MainWindow : Window {
         }, DispatcherPriority.Loaded);
 
         _loadingHistory = false;
+        AppLog.Info("history", $"loaded older page for {AppTelemetry.DescribeConversation(convId, _activeConv?.IsGroup == true)} added={older.Count} offset={_msgOffset}/{_msgTotal} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
     }
 
     /// <summary>
@@ -754,6 +1003,7 @@ public partial class MainWindow : Window {
     /// Only auto-scrolls if user was already near bottom.
     /// </summary>
     void AddMessageToList(MessageViewModel vm) {
+        ApplyReceiptUi(vm);
         _messages.Add(vm);
         _msgOffset++;
         _msgTotal++;
@@ -787,6 +1037,8 @@ public partial class MainWindow : Window {
     async Task SendMessageAsync() {
         var text = InputBox.Text.Trim();
         if (string.IsNullOrEmpty(text) || _activeConv == null || _user == null) return;
+        EmojiPopup.IsOpen = false;
+        AppLog.Info("send", $"queueing {_activeConv.IsGroup switch { true => "group", false => "direct" }} message for {AppTelemetry.DescribeConversation(_activeConvId, _activeConv.IsGroup)} length={text.Length}");
         InputBox.Clear();
 
         var msg = new Message {
@@ -797,6 +1049,7 @@ public partial class MainWindow : Window {
             Status = MessageStatus.Sending,
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
+        msg.ConvType = _activeConv.IsGroup ? ConversationType.Group : ConversationType.Direct;
 
         // Show optimistically
         var senderName = $"{_user.DisplayName} (you)";
@@ -811,16 +1064,24 @@ public partial class MainWindow : Window {
     }
 
     async Task SendDmAsync(Message msg, MessageViewModel vm) {
+        var started = AppTelemetry.StartTimer();
         var contact = _activeConv!.ContactData!;
         if (!await EnsureContactKeysAsync(contact)) {
             vm.Status = MessageStatus.Failed;
-            SidebarStatus.Text = contact.HasPendingKeyChange
+            ApplyReceiptUi(vm);
+            SetSidebarStatus(contact.HasPendingKeyChange
                 ? $"can't send until you review {contact.DisplayName}'s new safety number"
-                : $"can't send yet: {contact.DisplayName} hasn't registered keys with this relay";
+                : $"can't send yet: {contact.DisplayName} hasn't registered keys with this relay");
+            AppLog.Warn("send", $"direct send blocked for {AppTelemetry.MaskUserId(contact.UserId)} pending_keys={contact.HasPendingKeyChange}");
             return;
         }
         var convKey = GetOrDeriveConvKey(contact);
-        if (convKey == null) { vm.Status = MessageStatus.Failed; return; }
+        if (convKey == null) {
+            vm.Status = MessageStatus.Failed;
+            ApplyReceiptUi(vm);
+            AppLog.Warn("send", $"direct send failed to derive conversation key for {AppTelemetry.MaskUserId(contact.UserId)}");
+            return;
+        }
 
         msg.SeqNum = _vault.NextSeqNum(msg.ConversationId);
         var payload = Crypto.EncryptDm(convKey, msg);
@@ -832,14 +1093,19 @@ public partial class MainWindow : Window {
         if (sent) {
             vm.Status = MessageStatus.Sent;
             _vault.UpdateMessageStatus(msg.Id, MessageStatus.Sent);
+            ApplyReceiptUi(vm);
+            AppLog.Info("send", $"direct message sent to {AppTelemetry.MaskUserId(contact.UserId)} seq={msg.SeqNum} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
         } else {
             // Queue in outbox for retry
             vm.Status = MessageStatus.Sending;
+            ApplyReceiptUi(vm);
             _vault.EnqueueOutbox(msg.Id, contact.UserId, payload, sig, msg.SeqNum);
+            AppLog.Warn("send", $"direct message queued for retry to {AppTelemetry.MaskUserId(contact.UserId)} seq={msg.SeqNum}");
         }
     }
 
     async Task SendGroupMessageAsync(Message msg, MessageViewModel vm) {
+        var started = AppTelemetry.StartTimer();
         var group = _activeConv!.GroupData!;
         msg.SeqNum = _vault.NextSeqNum(msg.ConversationId);
         msg.ConvType = ConversationType.Group;
@@ -850,11 +1116,15 @@ public partial class MainWindow : Window {
 
         var sent = await _net.SendGroupAsync(group.GroupId, group.MemberIds, payload, sig, msg.SeqNum);
         vm.Status = sent ? MessageStatus.Sent : MessageStatus.Sending;
+        ApplyReceiptUi(vm);
         if (!sent)
             _vault.EnqueueOutbox(msg.Id, group.GroupId, payload, sig, msg.SeqNum,
                 ConversationType.Group, group.GroupId, group.MemberIds);
         else
             _vault.UpdateMessageStatus(msg.Id, MessageStatus.Sent);
+        AppLog.Info("send", sent
+            ? $"group message sent to {group.MemberIds.Count - 1} recipients seq={msg.SeqNum} in {AppTelemetry.ElapsedMilliseconds(started)}ms"
+            : $"group message queued for retry group={AppTelemetry.MaskUserId(group.GroupId)} seq={msg.SeqNum}");
     }
 
     // ── Outbox flush (resend failed/offline messages) ──────────────────────
@@ -865,6 +1135,9 @@ public partial class MainWindow : Window {
         _flushingOutbox = true;
         try {
             var pending = _vault.LoadOutbox();
+            if (pending.Count > 0) {
+                AppLog.Info("outbox", $"flush started with {pending.Count} pending item(s)");
+            }
             foreach (var item in pending) {
                 bool sent;
                 if (item.ConvType == ConversationType.Group && item.MemberIds != null)
@@ -876,9 +1149,14 @@ public partial class MainWindow : Window {
                     _vault.RemoveOutbox(item.Id);
                     _vault.UpdateMessageStatus(item.Id, MessageStatus.Sent);
                     var vm = _messages.FirstOrDefault(m => m.Id == item.Id);
-                    if (vm != null) vm.Status = MessageStatus.Sent;
+                    if (vm != null) {
+                        vm.Status = MessageStatus.Sent;
+                        ApplyReceiptUi(vm);
+                    }
+                    AppLog.Info("outbox", $"delivered queued {item.ConvType} item seq={item.SeqNum} id={AppTelemetry.MaskUserId(item.Id)}");
                 } else {
                     _vault.IncrementOutboxAttempts(item.Id);
+                    AppLog.Warn("outbox", $"retry failed for queued {item.ConvType} item seq={item.SeqNum} id={AppTelemetry.MaskUserId(item.Id)}");
                 }
             }
         } finally {
@@ -895,6 +1173,7 @@ public partial class MainWindow : Window {
             return contact.SignPubKey.Length > 0 && contact.DhPubKey.Length > 0;
         }
 
+        var started = AppTelemetry.StartTimer();
         var keys = await _net.GetUserKeysAsync(contact.UserId);
         if (keys == null) return contact.SignPubKey.Length > 0 && contact.DhPubKey.Length > 0;
 
@@ -907,6 +1186,7 @@ public partial class MainWindow : Window {
             }
 
             UpdateActiveConversationSecurityUi();
+            AppLog.Info("keys", $"contact key check unchanged for {AppTelemetry.MaskUserId(contact.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         }
 
@@ -918,6 +1198,7 @@ public partial class MainWindow : Window {
             contact.KeyChangedAt = 0;
             _vault.SaveContact(contact);
             UpdateActiveConversationSecurityUi();
+            AppLog.Info("keys", $"contact keys hydrated for {AppTelemetry.MaskUserId(contact.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         }
 
@@ -932,7 +1213,8 @@ public partial class MainWindow : Window {
             UpdateActiveConversationSecurityUi();
         }
 
-        SidebarStatus.Text = $"warning: {contact.DisplayName}'s relay keys changed. compare the new safety number before sending.";
+        SetSidebarStatus($"warning: {contact.DisplayName}'s relay keys changed. compare the new safety number before sending.");
+        AppLog.Warn("keys", $"relay key change detected for {AppTelemetry.MaskUserId(contact.UserId)}");
         return false;
     }
 
@@ -949,7 +1231,10 @@ public partial class MainWindow : Window {
             _vault.RemoveOutbox(item.Id);
             _vault.UpdateMessageStatus(item.Id, MessageStatus.Failed);
             var vm = _messages.FirstOrDefault(m => m.Id == item.Id);
-            if (vm != null) vm.Status = MessageStatus.Failed;
+            if (vm != null) {
+                vm.Status = MessageStatus.Failed;
+                ApplyReceiptUi(vm);
+            }
         }
     }
 
@@ -1030,7 +1315,288 @@ public partial class MainWindow : Window {
         }
     }
 
+    static string BuildReceiptContent(string messageId, string conversationId, string scope, string status) =>
+        DeliveryReceiptPrefix + JsonSerializer.Serialize(new DeliveryReceiptPayload(
+            messageId,
+            conversationId,
+            scope,
+            status,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+
+    static bool TryParseDeliveryReceipt(string content, out DeliveryReceiptPayload? receipt) {
+        receipt = null;
+        if (!content.StartsWith(DeliveryReceiptPrefix, StringComparison.Ordinal)) return false;
+
+        try {
+            receipt = JsonSerializer.Deserialize<DeliveryReceiptPayload>(
+                content[DeliveryReceiptPrefix.Length..]);
+            if (receipt == null) return false;
+            if (string.IsNullOrWhiteSpace(receipt.MessageId) ||
+                string.IsNullOrWhiteSpace(receipt.ConversationId) ||
+                string.IsNullOrWhiteSpace(receipt.Scope) ||
+                string.IsNullOrWhiteSpace(receipt.Status)) {
+                return false;
+            }
+
+            return receipt.Scope is ReceiptScopeDirect or ReceiptScopeGroup;
+        } catch {
+            return false;
+        }
+    }
+
+    bool RegisterReceiptSent(string recipientId, string messageId, string status) {
+        var key = $"{recipientId}|{messageId}|{status}";
+        return _sentReceiptKeys.Add(key);
+    }
+
+    HashSet<string> GetReceiptSet(Dictionary<string, HashSet<string>> map, string messageId) {
+        if (!map.TryGetValue(messageId, out var set))
+            map[messageId] = set = [];
+        return set;
+    }
+
+    MessageStatus? ParseReceiptStatus(string status) =>
+        status.Trim().ToLowerInvariant() switch {
+            ReceiptStatusReceived => MessageStatus.Delivered,
+            ReceiptStatusSeen => MessageStatus.Seen,
+            _ => null
+        };
+
+    void RegisterIncomingReceipt(string messageId, string fromUserId, MessageStatus status) {
+        if (status == MessageStatus.Seen) {
+            GetReceiptSet(_messageReceivedBy, messageId).Add(fromUserId);
+            GetReceiptSet(_messageSeenBy, messageId).Add(fromUserId);
+            return;
+        }
+
+        if (status == MessageStatus.Delivered) {
+            GetReceiptSet(_messageReceivedBy, messageId).Add(fromUserId);
+        }
+    }
+
+    void HydrateReceiptCache(IEnumerable<Message> messages) {
+        var outgoingIds = messages
+            .Where(m => m.IsMine)
+            .Select(m => m.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (outgoingIds.Count == 0) return;
+
+        var receipts = _vault.LoadMessageReceipts(outgoingIds);
+        foreach (var receipt in receipts) {
+            RegisterIncomingReceipt(receipt.MessageId, receipt.UserId, receipt.Status);
+        }
+    }
+
+    string ResolveUserLabel(string userId) {
+        if (_user != null && userId == _user.UserId) return $"{_user.DisplayName} (you)";
+        var convContact = _convs.FirstOrDefault(c => c.ContactData?.UserId == userId)?.ContactData;
+        if (convContact != null) return convContact.DisplayName;
+
+        var contact = _vault.LoadContacts().FirstOrDefault(c => c.UserId == userId);
+        return contact?.DisplayName ?? AppTelemetry.MaskUserId(userId);
+    }
+
+    Brush ColorForUserId(string userId) {
+        if (_userColorCache.TryGetValue(userId, out var cached)) return cached;
+
+        var palette = new[] {
+            "#7AA2FF", "#6EE7C8", "#F6B15F", "#FF8BA7", "#C6A0FF", "#9BE564", "#FFB86B", "#7FD3F7"
+        };
+        var idx = Math.Abs(StringComparer.Ordinal.GetHashCode(userId)) % palette.Length;
+        var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(palette[idx])!;
+        brush.Freeze();
+        _userColorCache[userId] = brush;
+        return brush;
+    }
+
+    void ApplyReceiptUi(MessageViewModel vm) {
+        if (!vm.IsMine) return;
+
+        vm.SeenBy.Clear();
+
+        _messageReceivedBy.TryGetValue(vm.Id, out var receivedBy);
+        _messageSeenBy.TryGetValue(vm.Id, out var seenBy);
+        receivedBy ??= [];
+        seenBy ??= [];
+
+        if (!vm.IsGroup) {
+            if (seenBy.Count > 0) {
+                vm.Status = MessageStatus.Seen;
+                vm.DeliveryText = "seen";
+                vm.DeliveryBrush = B.Blue;
+                return;
+            }
+            if (receivedBy.Count > 0) {
+                vm.Status = MessageStatus.Delivered;
+                vm.DeliveryText = "received";
+                vm.DeliveryBrush = B.Green;
+                return;
+            }
+
+            vm.DeliveryText = vm.Status switch {
+                MessageStatus.Sending => "sending",
+                MessageStatus.Sent => "sent",
+                MessageStatus.Failed => "failed",
+                MessageStatus.Seen => "seen",
+                MessageStatus.Delivered => "received",
+                _ => ""
+            };
+            vm.DeliveryBrush = vm.Status switch {
+                MessageStatus.Failed => B.Red,
+                MessageStatus.Seen => B.Blue,
+                MessageStatus.Delivered => B.Green,
+                _ => B.Dim
+            };
+            return;
+        }
+
+        foreach (var userId in seenBy.OrderBy(id => ResolveUserLabel(id), StringComparer.OrdinalIgnoreCase)) {
+            vm.SeenBy.Add(new SeenByChipViewModel {
+                Name = ResolveUserLabel(userId),
+                Color = ColorForUserId(userId)
+            });
+        }
+
+        if (seenBy.Count > 0) {
+            vm.DeliveryText = $"seen by {seenBy.Count}";
+            vm.DeliveryBrush = B.Blue;
+            return;
+        }
+        if (receivedBy.Count > 0) {
+            vm.DeliveryText = $"received by {receivedBy.Count}";
+            vm.DeliveryBrush = B.Green;
+            return;
+        }
+
+        vm.DeliveryText = vm.Status switch {
+            MessageStatus.Sending => "sending",
+            MessageStatus.Sent => "sent",
+            MessageStatus.Failed => "failed",
+            _ => ""
+        };
+        vm.DeliveryBrush = vm.Status == MessageStatus.Failed ? B.Red : B.Dim;
+    }
+
+    void ApplyReceiptUi(string messageId) {
+        var vm = _messages.FirstOrDefault(m => m.Id == messageId);
+        if (vm != null) {
+            ApplyReceiptUi(vm);
+        }
+    }
+
+    async Task SendDirectReceiptAsync(Contact senderContact, Message incoming, string status) {
+        if (_user == null) return;
+        if (!RegisterReceiptSent(senderContact.UserId, incoming.Id, status)) return;
+
+        var convId = senderContact.ConversationId ?? senderContact.UserId;
+        var convKey = GetOrDeriveConvKey(senderContact);
+        if (convKey == null) return;
+
+        var receiptMessage = new Message {
+            Id = Guid.NewGuid().ToString("N"),
+            ConversationId = convId,
+            SenderId = _user.UserId,
+            Content = BuildReceiptContent(incoming.Id, incoming.ConversationId, ReceiptScopeDirect, status),
+            IsMine = true,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+        receiptMessage.SeqNum = _vault.NextSeqNum(convId);
+
+        var payload = Crypto.EncryptDm(convKey, receiptMessage);
+        var sig = Crypto.SignPayload(_user.SignPrivKey, payload, receiptMessage.SeqNum);
+        var sent = await _net.SendDmAsync(senderContact.UserId, payload, sig, receiptMessage.SeqNum);
+        if (!sent) {
+            _vault.EnqueueOutbox(Guid.NewGuid().ToString("N"), senderContact.UserId, payload, sig, receiptMessage.SeqNum);
+            AppLog.Warn("receipt", $"queued direct receipt status={status} msg={AppTelemetry.MaskUserId(incoming.Id)} to={AppTelemetry.MaskUserId(senderContact.UserId)}");
+        } else {
+            AppLog.Info("receipt", $"sent direct receipt status={status} msg={AppTelemetry.MaskUserId(incoming.Id)} to={AppTelemetry.MaskUserId(senderContact.UserId)}");
+        }
+    }
+
+    async Task SendGroupReceiptAsync(Contact senderContact, Message incoming, string status) {
+        if (_user == null) return;
+        if (!RegisterReceiptSent(senderContact.UserId, incoming.Id, status)) return;
+
+        var convId = senderContact.ConversationId ?? senderContact.UserId;
+        var convKey = GetOrDeriveConvKey(senderContact);
+        if (convKey == null) return;
+
+        var receiptMessage = new Message {
+            Id = Guid.NewGuid().ToString("N"),
+            ConversationId = convId,
+            SenderId = _user.UserId,
+            Content = BuildReceiptContent(incoming.Id, incoming.ConversationId, ReceiptScopeGroup, status),
+            IsMine = true,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+        receiptMessage.SeqNum = _vault.NextSeqNum(convId);
+
+        var payload = Crypto.EncryptDm(convKey, receiptMessage);
+        var sig = Crypto.SignPayload(_user.SignPrivKey, payload, receiptMessage.SeqNum);
+        var sent = await _net.SendDmAsync(senderContact.UserId, payload, sig, receiptMessage.SeqNum);
+        if (!sent) {
+            _vault.EnqueueOutbox(Guid.NewGuid().ToString("N"), senderContact.UserId, payload, sig, receiptMessage.SeqNum);
+            AppLog.Warn("receipt", $"queued group receipt status={status} msg={AppTelemetry.MaskUserId(incoming.Id)} to={AppTelemetry.MaskUserId(senderContact.UserId)}");
+        } else {
+            AppLog.Info("receipt", $"sent group receipt status={status} msg={AppTelemetry.MaskUserId(incoming.Id)} to={AppTelemetry.MaskUserId(senderContact.UserId)}");
+        }
+    }
+
+    async Task MarkActiveConversationSeenAsync() {
+        if (_activeConv == null) return;
+
+        if (!_activeConv.IsGroup && _activeConv.ContactData is Contact directContact) {
+            var visibleIncoming = _messages.Where(m =>
+                !m.IsMine &&
+                !m.IsGroup &&
+                string.Equals(m.ConversationId, _activeConvId, StringComparison.Ordinal)).ToList();
+            foreach (var vm in visibleIncoming) {
+                var incoming = new Message {
+                    Id = vm.Id,
+                    ConversationId = vm.ConversationId
+                };
+                await SendDirectReceiptAsync(directContact, incoming, ReceiptStatusSeen);
+            }
+            return;
+        }
+
+        if (_activeConv.IsGroup) {
+            var visibleIncoming = _messages.Where(m =>
+                !m.IsMine &&
+                m.IsGroup &&
+                string.Equals(m.ConversationId, _activeConvId, StringComparison.Ordinal)).ToList();
+            foreach (var vm in visibleIncoming) {
+                var senderContact = _vault.LoadContacts().FirstOrDefault(c => c.UserId == vm.SenderId);
+                if (senderContact == null) continue;
+                var incoming = new Message {
+                    Id = vm.Id,
+                    ConversationId = vm.ConversationId
+                };
+                await SendGroupReceiptAsync(senderContact, incoming, ReceiptStatusSeen);
+            }
+        }
+    }
+
     bool TryHandleDirectSystemMessage(Contact senderContact, Message msg) {
+        if (TryParseDeliveryReceipt(msg.Content, out var receipt) && receipt != null) {
+            var receiptStatus = ParseReceiptStatus(receipt.Status);
+            if (receiptStatus is MessageStatus.Delivered or MessageStatus.Seen) {
+                if (!_vault.MessageExists(receipt.MessageId)) {
+                    return true;
+                }
+                RegisterIncomingReceipt(receipt.MessageId, senderContact.UserId, receiptStatus.Value);
+                _vault.UpsertMessageReceipt(receipt.MessageId, senderContact.UserId, receiptStatus.Value, receipt.Ts);
+                if (receipt.Scope == ReceiptScopeDirect) {
+                    _vault.UpdateMessageStatus(receipt.MessageId, receiptStatus.Value);
+                }
+                ApplyReceiptUi(receipt.MessageId);
+                AppLog.Info("receipt", $"applied {receiptStatus.Value.ToString().ToLowerInvariant()} receipt scope={receipt.Scope} from={AppTelemetry.MaskUserId(senderContact.UserId)} msg={AppTelemetry.MaskUserId(receipt.MessageId)}");
+            }
+            return true;
+        }
+
         if (!TryParseGroupInvite(msg.Content, out var invite) || invite == null || _user == null)
             return false;
 
@@ -1041,7 +1607,7 @@ public partial class MainWindow : Window {
         try {
             groupKey = Convert.FromBase64String(invite.GroupKey);
         } catch {
-            SidebarStatus.Text = "received an invalid group invite";
+            SetSidebarStatus("received an invalid group invite");
             return true;
         }
 
@@ -1068,24 +1634,29 @@ public partial class MainWindow : Window {
             existing.GroupData = group;
         }
 
-        SidebarStatus.Text = $"joined group: {group.Name}";
+        SetSidebarStatus($"joined group: {group.Name}");
         return true;
     }
 
-    async Task SendGroupInvitesAsync(GroupInfo group, Dictionary<string, Contact> contactsById) {
+    async Task SendGroupInvitesAsync(GroupInfo group, Dictionary<string, Contact> contactsById, IEnumerable<string>? targetMembers = null) {
         if (_user == null) return;
 
-        foreach (var memberId in group.MemberIds.Where(id => id != _user.UserId)) {
+        var recipients = (targetMembers ?? group.MemberIds)
+            .Where(id => id != _user.UserId)
+            .Distinct()
+            .ToList();
+
+        foreach (var memberId in recipients) {
             if (!contactsById.TryGetValue(memberId, out var contact)) continue;
             if (!await EnsureContactKeysAsync(contact)) {
-                SidebarStatus.Text = $"group created, but {contact.DisplayName} has not registered relay keys yet";
+                SetSidebarStatus($"group created, but {contact.DisplayName} has not registered relay keys yet");
                 continue;
             }
 
             var convId = contact.ConversationId ?? contact.UserId;
             var convKey = GetOrDeriveConvKey(contact);
             if (convKey == null) {
-                SidebarStatus.Text = $"group created, but invite encryption failed for {contact.DisplayName}";
+                SetSidebarStatus($"group created, but invite encryption failed for {contact.DisplayName}");
                 continue;
             }
 
@@ -1104,7 +1675,7 @@ public partial class MainWindow : Window {
             var sent = await _net.SendDmAsync(contact.UserId, payload, sig, inviteMessage.SeqNum);
             if (!sent) {
                 _vault.EnqueueOutbox(Guid.NewGuid().ToString("N"), contact.UserId, payload, sig, inviteMessage.SeqNum);
-                SidebarStatus.Text = $"group invite queued for {contact.DisplayName}";
+                SetSidebarStatus($"group invite queued for {contact.DisplayName}");
             }
         }
     }
@@ -1116,26 +1687,78 @@ public partial class MainWindow : Window {
         AddContactId.Clear();
         AddContactName.Clear();
         AddStatus.Visibility = Visibility.Collapsed;
+        AddStatusPanel.Visibility = Visibility.Collapsed;
         ShowAddDmTab();
     }
 
+    void BtnQuickNewGroup_Click(object s, RoutedEventArgs e) {
+        AddOverlay.Visibility = Visibility.Visible;
+        AddStatus.Visibility = Visibility.Collapsed;
+        AddStatusPanel.Visibility = Visibility.Collapsed;
+        _groupInviteMode = false;
+        ShowAddGroupTab();
+    }
+
+    void BtnGroupInvite_Click(object s, RoutedEventArgs e) {
+        if (_activeConv?.GroupData == null) {
+            SetSidebarStatus("open a group first");
+            return;
+        }
+
+        AddOverlay.Visibility = Visibility.Visible;
+        AddStatus.Visibility = Visibility.Collapsed;
+        AddStatusPanel.Visibility = Visibility.Collapsed;
+        _groupInviteMode = true;
+        ShowAddGroupTab();
+    }
+
     void TabAddDm_Click(object s, RoutedEventArgs e) => ShowAddDmTab();
-    void TabAddGroup_Click(object s, RoutedEventArgs e) => ShowAddGroupTab();
+    void TabAddGroup_Click(object s, RoutedEventArgs e) {
+        _groupInviteMode = false;
+        ShowAddGroupTab();
+    }
 
     void ShowAddDmTab() {
         AddDmForm.Visibility = Visibility.Visible;
         AddGroupForm.Visibility = Visibility.Collapsed;
-        TabAddDm.BorderBrush = (Brush)FindResource("Green");
+        TabAddDm.Content = "Add Friend";
+        TabAddGroup.Content = "New Group";
+        TabAddDm.Style = (Style)FindResource("AccentBtn");
+        TabAddGroup.Style = (Style)FindResource("GroupBtn");
+        TabAddDm.BorderBrush = (Brush)FindResource("TealAccent");
         TabAddGroup.BorderBrush = (Brush)FindResource("Border");
         AddStatus.Visibility = Visibility.Collapsed;
+        AddStatusPanel.Visibility = Visibility.Collapsed;
+        _groupInviteMode = false;
     }
 
     void ShowAddGroupTab() {
         AddDmForm.Visibility = Visibility.Collapsed;
         AddGroupForm.Visibility = Visibility.Visible;
-        TabAddGroup.BorderBrush = (Brush)FindResource("Green");
+        TabAddDm.Content = "Add Friend";
+        TabAddGroup.Content = "New Group";
+        TabAddDm.Style = (Style)FindResource("AccentBtn");
+        TabAddGroup.Style = (Style)FindResource("GroupBtn");
+        TabAddGroup.BorderBrush = (Brush)FindResource("GoldAccent");
         TabAddDm.BorderBrush = (Brush)FindResource("Border");
         AddStatus.Visibility = Visibility.Collapsed;
+        AddStatusPanel.Visibility = Visibility.Collapsed;
+
+        GroupMemberIds.Clear();
+        if (_groupInviteMode && _activeConv?.IsGroup == true && _activeConv.GroupData != null) {
+            _groupInviteMode = true;
+            GroupModeHint.Text = $"Invite members to #{_activeConv.GroupData.Name}.";
+            NewGroupName.Text = _activeConv.GroupData.Name;
+            NewGroupName.IsEnabled = false;
+            BtnConfirmCreateGroup.Content = "Invite members";
+            return;
+        }
+
+        _groupInviteMode = false;
+        GroupModeHint.Text = "Create a solo group now and invite people later.";
+        NewGroupName.IsEnabled = true;
+        NewGroupName.Clear();
+        BtnConfirmCreateGroup.Content = "Create group";
     }
 
     void BtnCloseOverlay_Click(object s, RoutedEventArgs e) =>
@@ -1191,7 +1814,10 @@ public partial class MainWindow : Window {
     }
 
     void BtnCreateGroup_Click(object s, RoutedEventArgs e) =>
-        RunUiTask(CreateGroupAsync, "create group", showSidebarErrors: false, onError: message => ShowAddStatus(message));
+        RunUiTask(_groupInviteMode ? InviteMembersToActiveGroupAsync : CreateGroupAsync,
+            _groupInviteMode ? "invite group members" : "create group",
+            showSidebarErrors: false,
+            onError: message => ShowAddStatus(message));
 
     async Task CreateGroupAsync() {
         var name = NewGroupName.Text.Trim();
@@ -1201,10 +1827,9 @@ public partial class MainWindow : Window {
         var memberIds = memberLines.Select(m => m.Trim())
                                    .Where(m => !string.IsNullOrEmpty(m) && m != _user!.UserId)
                                    .Distinct().ToList();
-        if (memberIds.Count == 0) { ShowAddStatus("add at least one other member"); return; }
 
         var contactsById = _vault.LoadContacts().ToDictionary(c => c.UserId);
-        var missingContacts = memberIds.Where(id => !contactsById.ContainsKey(id)).ToList();
+        var missingContacts = memberIds.Where(id => !contactsById.ContainsKey(id)).Distinct().ToList();
         if (missingContacts.Count > 0) {
             ShowAddStatus("add all group members as direct contacts first");
             return;
@@ -1230,13 +1855,57 @@ public partial class MainWindow : Window {
         _convs.Add(conv);
         AddOverlay.Visibility = Visibility.Collapsed;
         ConvList.SelectedItem = conv;
-        await SendGroupInvitesAsync(group, contactsById);
+
+        var inviteTargets = memberIds.Where(id => id != _user.UserId).ToList();
+        if (inviteTargets.Count > 0) {
+            await SendGroupInvitesAsync(group, contactsById, inviteTargets);
+        } else {
+            SetSidebarStatus($"created #{group.Name}. invite members later from the Group tab.");
+        }
+    }
+
+    async Task InviteMembersToActiveGroupAsync() {
+        if (_activeConv?.GroupData is not GroupInfo group || _user == null) {
+            ShowAddStatus("open a group first");
+            return;
+        }
+
+        var memberLines = GroupMemberIds.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var requested = memberLines.Select(m => m.Trim())
+                                   .Where(m => !string.IsNullOrEmpty(m) && m != _user.UserId)
+                                   .Distinct()
+                                   .ToList();
+        if (requested.Count == 0) {
+            ShowAddStatus("enter at least one member user id");
+            return;
+        }
+
+        var contactsById = _vault.LoadContacts().ToDictionary(c => c.UserId);
+        var missingContacts = requested.Where(id => !contactsById.ContainsKey(id)).Distinct().ToList();
+        if (missingContacts.Count > 0) {
+            ShowAddStatus("add those users as direct contacts first");
+            return;
+        }
+
+        var newMembers = requested.Where(id => !group.MemberIds.Contains(id)).Distinct().ToList();
+        if (newMembers.Count == 0) {
+            ShowAddStatus("all listed users are already in this group", false);
+            return;
+        }
+
+        group.MemberIds = group.MemberIds.Concat(newMembers).Distinct().ToList();
+        _vault.SaveGroup(group);
+        await SendGroupInvitesAsync(group, contactsById, newMembers);
+
+        AddOverlay.Visibility = Visibility.Collapsed;
+        SetSidebarStatus($"invited {newMembers.Count} member(s) to #{group.Name}");
     }
 
     void ShowAddStatus(string msg, bool isError = true) {
         AddStatus.Text = msg;
         AddStatus.Foreground = isError ? (Brush)FindResource("Red") : (Brush)FindResource("Dim");
         AddStatus.Visibility = Visibility.Visible;
+        AddStatusPanel.Visibility = Visibility.Visible;
     }
 
     // ── My ID copy ────────────────────────────────────────────────────────
@@ -1245,7 +1914,7 @@ public partial class MainWindow : Window {
         if (_user == null) return;
         Clipboard.SetText(_user.UserId);
         var prev = BtnMyId.Content;
-        BtnMyId.Content = "[copied!]";
+        BtnMyId.Content = "Copied";
         var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         t.Tick += (_, _) => { BtnMyId.Content = prev; t.Stop(); };
         t.Start();
@@ -1284,7 +1953,7 @@ public partial class MainWindow : Window {
 
             if (result == MessageBoxResult.Yes) {
                 AcceptPendingContactKeys(contact);
-                SidebarStatus.Text = $"{contact.DisplayName} verified with the new safety number";
+                SetSidebarStatus($"{contact.DisplayName} verified with the new safety number");
             }
 
             return;
@@ -1309,7 +1978,7 @@ public partial class MainWindow : Window {
         if (verify == MessageBoxResult.Yes) {
             contact.IsVerified = true;
             _vault.SaveContact(contact);
-            SidebarStatus.Text = $"{contact.DisplayName} marked as verified";
+            SetSidebarStatus($"{contact.DisplayName} marked as verified");
             UpdateActiveConversationSecurityUi();
         }
     }
@@ -1381,17 +2050,22 @@ public partial class MainWindow : Window {
 
     // ── Helper: ViewModel factory ─────────────────────────────────────────
 
-    MessageViewModel ToViewModel(Message msg, string senderName) => new() {
-        Id = msg.Id,
-        ConversationId = msg.ConversationId,
-        SenderId = msg.SenderId,
-        SenderLabel = msg.IsMine ? $"{_user?.DisplayName ?? "me"}:" : $"{senderName}:",
-        Content = msg.Content,
-        Timestamp = msg.Timestamp,
-        SeqNum = msg.SeqNum,
-        IsMine = msg.IsMine,
-        Status = msg.Status
-    };
+    MessageViewModel ToViewModel(Message msg, string senderName) {
+        var vm = new MessageViewModel {
+            Id = msg.Id,
+            ConversationId = msg.ConversationId,
+            SenderId = msg.SenderId,
+            SenderLabel = msg.IsMine ? $"{_user?.DisplayName ?? "me"}:" : $"{senderName}:",
+            Content = msg.Content,
+            Timestamp = msg.Timestamp,
+            SeqNum = msg.SeqNum,
+            IsMine = msg.IsMine,
+            IsGroup = msg.ConvType == ConversationType.Group,
+            Status = msg.Status
+        };
+        ApplyReceiptUi(vm);
+        return vm;
+    }
 
     // ── Helper: find ScrollViewer in ListBox ──────────────────────────────
 

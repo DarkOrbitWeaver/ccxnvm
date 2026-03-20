@@ -9,12 +9,14 @@ $serverDll = Join-Path $repoRoot "server\bin\Debug\net9.0\CipherServer.dll"
 $serverUrl = "http://127.0.0.1:$port"
 $relayDbPath = Join-Path $repoRoot ".publish\relay-test.db"
 
+$env:MSBUILDDISABLENODEREUSE = "1"
+
 if (Test-Path $relayDbPath) {
     Remove-Item $relayDbPath -Force
 }
 
 
-dotnet build "$repoRoot\ccxnvm.sln" | Out-Host
+dotnet build "$repoRoot\ccxnvm.sln" /nodeReuse:false | Out-Host
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -59,4 +61,5 @@ finally {
     if ($serverProc -and -not $serverProc.HasExited) {
         Stop-Process -Id $serverProc.Id -Force
     }
+    dotnet build-server shutdown | Out-Null
 }

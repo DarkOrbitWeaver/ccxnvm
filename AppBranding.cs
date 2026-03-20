@@ -8,6 +8,11 @@ public static class AppBranding {
     public const string DefaultRelayUrl = "https://cipher-relay.onrender.com";
     public const string GitHubRepoUrl = "https://github.com/DarkOrbitWeaver/ccxnvm";
 
+    public static string ResolveRelayUrl(string? url) {
+        var trimmed = url?.Trim().TrimEnd('/') ?? "";
+        return string.IsNullOrWhiteSpace(trimmed) ? DefaultRelayUrl : trimmed;
+    }
+
     public static string ProductName =>
         Assembly.GetCustomAttribute<AssemblyProductAttribute>()?.Product ?? "Cipher";
 
