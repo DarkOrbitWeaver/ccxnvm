@@ -379,6 +379,7 @@ public static class Crypto {
 // ═══════════════════════════════════════════════════════════════════════════
 public partial class Vault : IDisposable {
     SqliteConnection? _db;
+    readonly object _gate = new();
     byte[] _key = [];
     string _path = "";
     bool _disposed;
@@ -394,23 +395,25 @@ public partial class Vault : IDisposable {
     // ── Open / Create ──────────────────────────────────────────────────────
 
     public void Open(string path, byte[] vaultKey) {
-        _path = path;
-        _key = vaultKey.ToArray();
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        _db = new SqliteConnection($"Data Source={path};");
-        try {
-            _db.Open();
-            ConfigureConnection();
-            InitSchema();
-            RunStartupMaintenance();
-            IsOpen = true;
-        } catch {
-            _db?.Dispose();
-            _db = null;
-            IsOpen = false;
-            Crypto.Wipe(_key);
-            _key = [];
-            throw;
+        lock (_gate) {
+            _path = path;
+            _key = vaultKey.ToArray();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            _db = new SqliteConnection($"Data Source={path};Pooling=False;");
+            try {
+                _db.Open();
+                ConfigureConnection();
+                InitSchema();
+                RunStartupMaintenance();
+                IsOpen = true;
+            } catch {
+                _db?.Dispose();
+                _db = null;
+                IsOpen = false;
+                Crypto.Wipe(_key);
+                _key = [];
+                throw;
+            }
         }
     }
 
@@ -419,7 +422,7 @@ public partial class Vault : IDisposable {
             CREATE TABLE IF NOT EXISTS identity (
                 id INTEGER PRIMARY KEY,
                 user_id TEXT NOT NULL,
-                display_name TEXT NOT NULL,
+                display_name_enc BLOB NOT NULL,
                 sign_priv BLOB NOT NULL,
                 sign_pub TEXT NOT NULL,
                 dh_priv BLOB NOT NULL,
@@ -478,13 +481,13 @@ public partial class Vault : IDisposable {
             );
             CREATE TABLE IF NOT EXISTS outbox (
                 id TEXT PRIMARY KEY,
-                recipient_id TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                sig TEXT NOT NULL,
+                recipient_id_enc BLOB NOT NULL,
+                payload_enc BLOB NOT NULL,
+                sig_enc BLOB NOT NULL,
                 seq_num INTEGER NOT NULL,
                 conv_type INTEGER NOT NULL DEFAULT 0,
                 group_id TEXT,
-                member_ids TEXT,
+                member_ids_enc BLOB,
                 created_at INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0
             );
@@ -500,86 +503,105 @@ public partial class Vault : IDisposable {
     // ── Identity ───────────────────────────────────────────────────────────
 
     public void SaveIdentity(LocalUser u) {
-        var signPrivEnc = Crypto.EncryptField(_key, u.SignPrivKey);
-        var dhPrivEnc = Crypto.EncryptField(_key, u.DhPrivKey);
-        ExecParam(@"
-            INSERT OR REPLACE INTO identity
-            VALUES (1, @uid, @name, @sp, @spub, @dp, @dpub, @srv, @ts)",
-            ("uid", u.UserId), ("name", u.DisplayName),
-            ("sp", signPrivEnc), ("spub", Convert.ToBase64String(u.SignPubKey)),
-            ("dp", dhPrivEnc), ("dpub", Convert.ToBase64String(u.DhPubKey)),
-            ("srv", u.ServerUrl), ("ts", u.CreatedAt));
+        lock (_gate) {
+            var signPrivEnc = Crypto.EncryptField(_key, u.SignPrivKey);
+            var dhPrivEnc = Crypto.EncryptField(_key, u.DhPrivKey);
+            var displayNameEnc = Crypto.EncryptStr(_key, u.DisplayName);
+            ExecParam(@"
+                INSERT OR REPLACE INTO identity
+                (id, user_id, display_name_enc, sign_priv, sign_pub, dh_priv, dh_pub, server_url, created_at)
+                VALUES (1, @uid, @name, @sp, @spub, @dp, @dpub, @srv, @ts)",
+                ("uid", u.UserId), ("name", displayNameEnc),
+                ("sp", signPrivEnc), ("spub", Convert.ToBase64String(u.SignPubKey)),
+                ("dp", dhPrivEnc), ("dpub", Convert.ToBase64String(u.DhPubKey)),
+                ("srv", u.ServerUrl), ("ts", u.CreatedAt));
+        }
     }
 
     public LocalUser? LoadIdentity() {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = "SELECT * FROM identity WHERE id=1";
-        using var r = cmd.ExecuteReader();
-        if (!r.Read()) return null;
-        var signPrivEnc = (byte[])r["sign_priv"];
-        var dhPrivEnc = (byte[])r["dh_priv"];
-        var signPriv = Crypto.DecryptField(_key, signPrivEnc);
-        var dhPriv = Crypto.DecryptField(_key, dhPrivEnc);
-        if (signPriv == null || dhPriv == null) return null;
-        return new LocalUser {
-            UserId = r.GetString(r.GetOrdinal("user_id")),
-            DisplayName = r.GetString(r.GetOrdinal("display_name")),
-            SignPrivKey = signPriv,
-            SignPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("sign_pub"))),
-            DhPrivKey = dhPriv,
-            DhPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("dh_pub"))),
-            ServerUrl = r.GetString(r.GetOrdinal("server_url")),
-            CreatedAt = r.GetInt64(r.GetOrdinal("created_at"))
-        };
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = "SELECT * FROM identity WHERE id=1";
+            using var r = cmd.ExecuteReader();
+            if (!r.Read()) return null;
+            var signPrivEnc = (byte[])r["sign_priv"];
+            var dhPrivEnc = (byte[])r["dh_priv"];
+            var displayNameEnc = (byte[])r["display_name_enc"];
+            var signPriv = Crypto.DecryptField(_key, signPrivEnc);
+            var dhPriv = Crypto.DecryptField(_key, dhPrivEnc);
+            var displayName = Crypto.DecryptStr(_key, displayNameEnc);
+            if (signPriv == null || dhPriv == null || displayName == null) {
+                if (signPriv != null) Crypto.Wipe(signPriv);
+                if (dhPriv != null) Crypto.Wipe(dhPriv);
+                return null;
+            }
+
+            return new LocalUser {
+                UserId = r.GetString(r.GetOrdinal("user_id")),
+                DisplayName = displayName,
+                SignPrivKey = signPriv,
+                SignPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("sign_pub"))),
+                DhPrivKey = dhPriv,
+                DhPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("dh_pub"))),
+                ServerUrl = r.GetString(r.GetOrdinal("server_url")),
+                CreatedAt = r.GetInt64(r.GetOrdinal("created_at"))
+            };
+        }
     }
 
     public bool HasIdentity() {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM identity";
-        return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM identity";
+            return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+        }
     }
 
     // ── Contacts ───────────────────────────────────────────────────────────
 
     public void SaveContact(Contact c) {
-        ExecParam(@"
-            INSERT OR REPLACE INTO contacts
-            (user_id, display_name_enc, sign_pub, dh_pub, conversation_id, added_at, last_seen, is_verified, pending_sign_pub, pending_dh_pub, key_changed_at)
-            VALUES (@uid, @name, @sp, @dp, @conv, @ts, @ls, @verified, @psp, @pdp, @changed)",
-            ("uid", c.UserId),
-            ("name", Crypto.EncryptStr(_key, c.DisplayName)),
-            ("sp", Convert.ToBase64String(c.SignPubKey)),
-            ("dp", Convert.ToBase64String(c.DhPubKey)),
-            ("conv", c.ConversationId ?? ""),
-            ("ts", c.AddedAt),
-            ("ls", (object?)null ?? DBNull.Value),
-            ("verified", c.IsVerified ? 1 : 0),
-            ("psp", c.PendingSignPubKey.Length > 0 ? Convert.ToBase64String(c.PendingSignPubKey) : DBNull.Value),
-            ("pdp", c.PendingDhPubKey.Length > 0 ? Convert.ToBase64String(c.PendingDhPubKey) : DBNull.Value),
-            ("changed", c.KeyChangedAt));
+        lock (_gate) {
+            ExecParam(@"
+                INSERT OR REPLACE INTO contacts
+                (user_id, display_name_enc, sign_pub, dh_pub, conversation_id, added_at, last_seen, is_verified, pending_sign_pub, pending_dh_pub, key_changed_at)
+                VALUES (@uid, @name, @sp, @dp, @conv, @ts, @ls, @verified, @psp, @pdp, @changed)",
+                ("uid", c.UserId),
+                ("name", Crypto.EncryptStr(_key, c.DisplayName)),
+                ("sp", Convert.ToBase64String(c.SignPubKey)),
+                ("dp", Convert.ToBase64String(c.DhPubKey)),
+                ("conv", c.ConversationId ?? ""),
+                ("ts", c.AddedAt),
+                ("ls", (object?)null ?? DBNull.Value),
+                ("verified", c.IsVerified ? 1 : 0),
+                ("psp", c.PendingSignPubKey.Length > 0 ? Convert.ToBase64String(c.PendingSignPubKey) : DBNull.Value),
+                ("pdp", c.PendingDhPubKey.Length > 0 ? Convert.ToBase64String(c.PendingDhPubKey) : DBNull.Value),
+                ("changed", c.KeyChangedAt));
+        }
     }
 
     public List<Contact> LoadContacts() {
-        var list = new List<Contact>();
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = "SELECT * FROM contacts ORDER BY added_at";
-        using var r = cmd.ExecuteReader();
-        while (r.Read()) {
-            var nameEnc = (byte[])r["display_name_enc"];
-            list.Add(new Contact {
-                UserId = r.GetString(r.GetOrdinal("user_id")),
-                DisplayName = Crypto.DecryptStr(_key, nameEnc) ?? "???",
-                SignPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("sign_pub"))),
-                DhPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("dh_pub"))),
-                PendingSignPubKey = ReadOptionalBase64(r, "pending_sign_pub"),
-                PendingDhPubKey = ReadOptionalBase64(r, "pending_dh_pub"),
-                IsVerified = TryGetInt32(r, "is_verified") == 1,
-                KeyChangedAt = TryGetInt64(r, "key_changed_at"),
-                ConversationId = r.GetString(r.GetOrdinal("conversation_id")),
-                AddedAt = r.GetInt64(r.GetOrdinal("added_at"))
-            });
+        lock (_gate) {
+            var list = new List<Contact>();
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = "SELECT * FROM contacts ORDER BY added_at";
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) {
+                var nameEnc = (byte[])r["display_name_enc"];
+                list.Add(new Contact {
+                    UserId = r.GetString(r.GetOrdinal("user_id")),
+                    DisplayName = Crypto.DecryptStr(_key, nameEnc) ?? "???",
+                    SignPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("sign_pub"))),
+                    DhPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("dh_pub"))),
+                    PendingSignPubKey = ReadOptionalBase64(r, "pending_sign_pub"),
+                    PendingDhPubKey = ReadOptionalBase64(r, "pending_dh_pub"),
+                    IsVerified = TryGetInt32(r, "is_verified") == 1,
+                    KeyChangedAt = TryGetInt64(r, "key_changed_at"),
+                    ConversationId = r.GetString(r.GetOrdinal("conversation_id")),
+                    AddedAt = r.GetInt64(r.GetOrdinal("added_at"))
+                });
+            }
+            return list;
         }
-        return list;
     }
 
     public void UpdateContactSeen(string userId) =>
@@ -589,66 +611,76 @@ public partial class Vault : IDisposable {
     // ── Groups ─────────────────────────────────────────────────────────────
 
     public void SaveGroup(GroupInfo g) {
-        ExecParam(@"
-            INSERT OR REPLACE INTO groups
-            (group_id, name_enc, member_ids, group_key_enc, owner_id, created_at)
-            VALUES (@id, @name, @members, @key, @owner, @ts)",
-            ("id", g.GroupId),
-            ("name", Crypto.EncryptStr(_key, g.Name)),
-            ("members", string.Join(",", g.MemberIds)),
-            ("key", Crypto.EncryptField(_key, g.GroupKey)),
-            ("owner", g.OwnerId),
-            ("ts", g.CreatedAt));
+        lock (_gate) {
+            ExecParam(@"
+                INSERT OR REPLACE INTO groups
+                (group_id, name_enc, member_ids, group_key_enc, owner_id, created_at)
+                VALUES (@id, @name, @members, @key, @owner, @ts)",
+                ("id", g.GroupId),
+                ("name", Crypto.EncryptStr(_key, g.Name)),
+                ("members", string.Join(",", g.MemberIds)),
+                ("key", Crypto.EncryptField(_key, g.GroupKey)),
+                ("owner", g.OwnerId),
+                ("ts", g.CreatedAt));
+        }
     }
 
     public List<GroupInfo> LoadGroups() {
-        var list = new List<GroupInfo>();
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = "SELECT * FROM groups";
-        using var r = cmd.ExecuteReader();
-        while (r.Read()) {
-            var keyEnc = (byte[])r["group_key_enc"];
-            var groupKey = Crypto.DecryptField(_key, keyEnc);
-            if (groupKey == null) continue;
-            list.Add(new GroupInfo {
-                GroupId = r.GetString(r.GetOrdinal("group_id")),
-                Name = Crypto.DecryptStr(_key, (byte[])r["name_enc"]) ?? "???",
-                MemberIds = r.GetString(r.GetOrdinal("member_ids"))
-                             .Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(),
-                GroupKey = groupKey,
-                OwnerId = TryGetString(r, "owner_id"),
-                CreatedAt = r.GetInt64(r.GetOrdinal("created_at"))
-            });
+        lock (_gate) {
+            var list = new List<GroupInfo>();
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = "SELECT * FROM groups";
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) {
+                var keyEnc = (byte[])r["group_key_enc"];
+                var groupKey = Crypto.DecryptField(_key, keyEnc);
+                if (groupKey == null) continue;
+                list.Add(new GroupInfo {
+                    GroupId = r.GetString(r.GetOrdinal("group_id")),
+                    Name = Crypto.DecryptStr(_key, (byte[])r["name_enc"]) ?? "???",
+                    MemberIds = r.GetString(r.GetOrdinal("member_ids"))
+                                 .Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(),
+                    GroupKey = groupKey,
+                    OwnerId = TryGetString(r, "owner_id"),
+                    CreatedAt = r.GetInt64(r.GetOrdinal("created_at"))
+                });
+            }
+            return list;
         }
-        return list;
     }
 
     public void DeleteGroupConversation(string groupId) {
-        ExecParam(@"
-            DELETE FROM message_receipts
-            WHERE message_id IN (
-                SELECT id FROM messages WHERE conversation_id=@gid
-            )",
-            ("gid", groupId));
-        ExecParam("DELETE FROM messages WHERE conversation_id=@gid", ("gid", groupId));
-        ExecParam("DELETE FROM conv_state WHERE conversation_id=@gid", ("gid", groupId));
-        ExecParam("DELETE FROM outbox WHERE conv_type=@ctype AND group_id=@gid",
-            ("ctype", (int)ConversationType.Group), ("gid", groupId));
-        ExecParam("DELETE FROM groups WHERE group_id=@gid", ("gid", groupId));
+        lock (_gate) {
+            using var tx = _db!.BeginTransaction(deferred: false);
+            ExecParamTx(tx, @"
+                DELETE FROM message_receipts
+                WHERE message_id IN (
+                    SELECT id FROM messages WHERE conversation_id=@gid
+                )",
+                ("gid", groupId));
+            ExecParamTx(tx, "DELETE FROM messages WHERE conversation_id=@gid", ("gid", groupId));
+            ExecParamTx(tx, "DELETE FROM conv_state WHERE conversation_id=@gid", ("gid", groupId));
+            ExecParamTx(tx, "DELETE FROM outbox WHERE conv_type=@ctype AND group_id=@gid",
+                ("ctype", (int)ConversationType.Group), ("gid", groupId));
+            ExecParamTx(tx, "DELETE FROM groups WHERE group_id=@gid", ("gid", groupId));
+            tx.Commit();
+        }
     }
 
     // ── Messages ───────────────────────────────────────────────────────────
 
     public void SaveMessage(Message msg) {
-        var contentEnc = Crypto.EncryptStr(_key, msg.Content);
-        ExecParam(@"INSERT OR REPLACE INTO messages
-            (id, conversation_id, sender_id, content_enc, timestamp,
-             seq_num, is_mine, status, conv_type, recipient_id)
-            VALUES (@id,@conv,@sid,@ct,@ts,@seq,@mine,@st,@ctype,@rid)",
-            ("id", msg.Id), ("conv", msg.ConversationId), ("sid", msg.SenderId),
-            ("ct", contentEnc), ("ts", msg.Timestamp), ("seq", msg.SeqNum),
-            ("mine", msg.IsMine ? 1 : 0), ("st", (int)msg.Status),
-            ("ctype", (int)msg.ConvType), ("rid", (object?)msg.RecipientId ?? DBNull.Value));
+        lock (_gate) {
+            var contentEnc = Crypto.EncryptStr(_key, msg.Content);
+            ExecParam(@"INSERT OR REPLACE INTO messages
+                (id, conversation_id, sender_id, content_enc, timestamp,
+                 seq_num, is_mine, status, conv_type, recipient_id)
+                VALUES (@id,@conv,@sid,@ct,@ts,@seq,@mine,@st,@ctype,@rid)",
+                ("id", msg.Id), ("conv", msg.ConversationId), ("sid", msg.SenderId),
+                ("ct", contentEnc), ("ts", msg.Timestamp), ("seq", msg.SeqNum),
+                ("mine", msg.IsMine ? 1 : 0), ("st", (int)msg.Status),
+                ("ctype", (int)msg.ConvType), ("rid", (object?)msg.RecipientId ?? DBNull.Value));
+        }
     }
 
     /// <summary>
@@ -657,41 +689,45 @@ public partial class Vault : IDisposable {
     /// Incrementing offset loads older history.
     /// </summary>
     public List<Message> LoadMessages(string conversationId, int offset, int limit = 50) {
-        var list = new List<Message>();
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = @"
-            SELECT * FROM messages
-            WHERE conversation_id=@conv
-            ORDER BY timestamp DESC
-            LIMIT @limit OFFSET @offset";
-        cmd.Parameters.AddWithValue("conv", conversationId);
-        cmd.Parameters.AddWithValue("limit", limit);
-        cmd.Parameters.AddWithValue("offset", offset);
-        using var r = cmd.ExecuteReader();
-        while (r.Read()) {
-            var ctEnc = (byte[])r["content_enc"];
-            var content = Crypto.DecryptStr(_key, ctEnc) ?? "[decrypt failed]";
-            list.Add(new Message {
-                Id = r.GetString(r.GetOrdinal("id")),
-                ConversationId = r.GetString(r.GetOrdinal("conversation_id")),
-                SenderId = r.GetString(r.GetOrdinal("sender_id")),
-                Content = content,
-                Timestamp = r.GetInt64(r.GetOrdinal("timestamp")),
-                SeqNum = r.GetInt64(r.GetOrdinal("seq_num")),
-                IsMine = r.GetInt32(r.GetOrdinal("is_mine")) == 1,
-                Status = (MessageStatus)r.GetInt32(r.GetOrdinal("status")),
-                ConvType = (ConversationType)r.GetInt32(r.GetOrdinal("conv_type"))
-            });
+        lock (_gate) {
+            var list = new List<Message>();
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = @"
+                SELECT * FROM messages
+                WHERE conversation_id=@conv
+                ORDER BY timestamp DESC
+                LIMIT @limit OFFSET @offset";
+            cmd.Parameters.AddWithValue("conv", conversationId);
+            cmd.Parameters.AddWithValue("limit", limit);
+            cmd.Parameters.AddWithValue("offset", offset);
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) {
+                var ctEnc = (byte[])r["content_enc"];
+                var content = Crypto.DecryptStr(_key, ctEnc) ?? "[decrypt failed]";
+                list.Add(new Message {
+                    Id = r.GetString(r.GetOrdinal("id")),
+                    ConversationId = r.GetString(r.GetOrdinal("conversation_id")),
+                    SenderId = r.GetString(r.GetOrdinal("sender_id")),
+                    Content = content,
+                    Timestamp = r.GetInt64(r.GetOrdinal("timestamp")),
+                    SeqNum = r.GetInt64(r.GetOrdinal("seq_num")),
+                    IsMine = r.GetInt32(r.GetOrdinal("is_mine")) == 1,
+                    Status = (MessageStatus)r.GetInt32(r.GetOrdinal("status")),
+                    ConvType = (ConversationType)r.GetInt32(r.GetOrdinal("conv_type"))
+                });
+            }
+            list.Reverse(); // Return in chronological order
+            return list;
         }
-        list.Reverse(); // Return in chronological order
-        return list;
     }
 
     public int GetMessageCount(string conversationId) {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE conversation_id=@conv";
-        cmd.Parameters.AddWithValue("conv", conversationId);
-        return Convert.ToInt32(cmd.ExecuteScalar());
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE conversation_id=@conv";
+            cmd.Parameters.AddWithValue("conv", conversationId);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
     }
 
     public void UpdateMessageStatus(string messageId, MessageStatus status) =>
@@ -706,10 +742,32 @@ public partial class Vault : IDisposable {
             ("st", (int)status), ("id", messageId));
 
     public bool MessageExists(string messageId) {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE id=@id";
-        cmd.Parameters.AddWithValue("id", messageId);
-        return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE id=@id";
+            cmd.Parameters.AddWithValue("id", messageId);
+            return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+        }
+    }
+
+    public (string conversationId, ConversationType convType, bool isMine)? GetMessageMetadata(string messageId) {
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = """
+                SELECT conversation_id, conv_type, is_mine
+                FROM messages
+                WHERE id=@id
+                LIMIT 1
+                """;
+            cmd.Parameters.AddWithValue("id", messageId);
+            using var r = cmd.ExecuteReader();
+            if (!r.Read()) return null;
+            return (
+                r.GetString(r.GetOrdinal("conversation_id")),
+                (ConversationType)r.GetInt32(r.GetOrdinal("conv_type")),
+                r.GetInt32(r.GetOrdinal("is_mine")) == 1
+            );
+        }
     }
 
     public void UpsertMessageReceipt(string messageId, string userId, MessageStatus status, long? updatedAt = null) {
@@ -738,47 +796,67 @@ public partial class Vault : IDisposable {
     }
 
     public List<MessageReceipt> LoadMessageReceipts(IEnumerable<string> messageIds) {
-        var ids = messageIds
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        if (ids.Count == 0) return [];
+        lock (_gate) {
+            var ids = messageIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (ids.Count == 0) return [];
 
-        using var cmd = _db!.CreateCommand();
-        var placeholders = new List<string>(ids.Count);
-        for (var i = 0; i < ids.Count; i++) {
-            var paramName = "@id" + i;
-            placeholders.Add(paramName);
-            cmd.Parameters.AddWithValue(paramName, ids[i]);
+            using var cmd = _db!.CreateCommand();
+            var placeholders = new List<string>(ids.Count);
+            for (var i = 0; i < ids.Count; i++) {
+                var paramName = "@id" + i;
+                placeholders.Add(paramName);
+                cmd.Parameters.AddWithValue(paramName, ids[i]);
+            }
+
+            cmd.CommandText = $@"
+                SELECT message_id, user_id, status, updated_at
+                FROM message_receipts
+                WHERE message_id IN ({string.Join(",", placeholders)})";
+
+            var list = new List<MessageReceipt>();
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) {
+                list.Add(new MessageReceipt(
+                    r.GetString(r.GetOrdinal("message_id")),
+                    r.GetString(r.GetOrdinal("user_id")),
+                    (MessageStatus)r.GetInt32(r.GetOrdinal("status")),
+                    r.GetInt64(r.GetOrdinal("updated_at"))));
+            }
+            return list;
         }
-
-        cmd.CommandText = $@"
-            SELECT message_id, user_id, status, updated_at
-            FROM message_receipts
-            WHERE message_id IN ({string.Join(",", placeholders)})";
-
-        var list = new List<MessageReceipt>();
-        using var r = cmd.ExecuteReader();
-        while (r.Read()) {
-            list.Add(new MessageReceipt(
-                r.GetString(r.GetOrdinal("message_id")),
-                r.GetString(r.GetOrdinal("user_id")),
-                (MessageStatus)r.GetInt32(r.GetOrdinal("status")),
-                r.GetInt64(r.GetOrdinal("updated_at"))));
-        }
-        return list;
     }
 
     // ── Conversation state & shared secrets ────────────────────────────────
 
     public void SaveConvState(string convId, long lastSeq, byte[]? secret = null) {
+        lock (_gate) {
+            SaveConvStateCore(null, convId, lastSeq, secret);
+        }
+    }
+
+    void SaveConvStateCore(SqliteTransaction? transaction, string convId, long lastSeq, byte[]? secret) {
         var secretEnc = secret != null ? Crypto.EncryptField(_key, secret) : null;
-        ExecParam(@"INSERT OR REPLACE INTO conv_state VALUES (@id, @seq, @sec)",
-            ("id", convId), ("seq", lastSeq), ("sec", (object?)secretEnc ?? DBNull.Value));
+        using var cmd = _db!.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = @"INSERT OR REPLACE INTO conv_state VALUES (@id, @seq, @sec)";
+        cmd.Parameters.AddWithValue("@id", convId);
+        cmd.Parameters.AddWithValue("@seq", lastSeq);
+        cmd.Parameters.AddWithValue("@sec", (object?)secretEnc ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
     }
 
     public (long lastSeq, byte[]? secret) LoadConvState(string convId) {
+        lock (_gate) {
+            return LoadConvStateCore(null, convId);
+        }
+    }
+
+    (long lastSeq, byte[]? secret) LoadConvStateCore(SqliteTransaction? transaction, string convId) {
         using var cmd = _db!.CreateCommand();
+        cmd.Transaction = transaction;
         cmd.CommandText = "SELECT last_seq, secret_enc FROM conv_state WHERE conversation_id=@id";
         cmd.Parameters.AddWithValue("id", convId);
         using var r = cmd.ExecuteReader();
@@ -793,15 +871,23 @@ public partial class Vault : IDisposable {
     }
 
     public long NextSeqNum(string convId) {
-        var (last, sec) = LoadConvState(convId);
-        var next = last + 1;
-        SaveConvState(convId, next, sec);
-        return next;
+        lock (_gate) {
+            using var tx = _db!.BeginTransaction(deferred: false);
+            var (last, secret) = LoadConvStateCore(tx, convId);
+            var next = last + 1;
+            SaveConvStateCore(tx, convId, next, secret);
+            tx.Commit();
+            if (secret != null) Crypto.Wipe(secret);
+            return next;
+        }
     }
 
     public void ClearConvSecret(string convId) {
-        var (lastSeq, _) = LoadConvState(convId);
-        SaveConvState(convId, lastSeq, null);
+        lock (_gate) {
+            var (lastSeq, secret) = LoadConvStateCore(null, convId);
+            if (secret != null) Crypto.Wipe(secret);
+            SaveConvStateCore(null, convId, lastSeq, null);
+        }
     }
 
     // ── Outbox (reliable delivery even across server restarts) ─────────────
@@ -809,33 +895,65 @@ public partial class Vault : IDisposable {
     public void EnqueueOutbox(string id, string recipientId, string payload, string sig,
         long seqNum, ConversationType ctype = ConversationType.Direct,
         string? groupId = null, List<string>? memberIds = null) {
-        ExecParam(@"INSERT OR REPLACE INTO outbox
-            VALUES (@id, @rid, @pl, @sig, @seq, @ct, @gid, @mids, @ts, 0)",
-            ("id", id), ("rid", recipientId), ("pl", payload), ("sig", sig),
-            ("seq", seqNum), ("ct", (int)ctype), ("gid", (object?)groupId ?? DBNull.Value),
-            ("mids", (object?)(memberIds != null ? string.Join(",", memberIds) : null) ?? DBNull.Value),
-            ("ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        lock (_gate) {
+            var recipientIdEnc = Crypto.EncryptStr(_key, recipientId);
+            var payloadEnc = Crypto.EncryptStr(_key, payload);
+            var sigEnc = Crypto.EncryptStr(_key, sig);
+            var memberIdsEnc = memberIds != null
+                ? Crypto.EncryptStr(_key, string.Join(",", memberIds))
+                : null;
+
+            ExecParam(@"
+                INSERT OR REPLACE INTO outbox
+                (id, recipient_id_enc, payload_enc, sig_enc, seq_num, conv_type, group_id, member_ids_enc, created_at, attempts)
+                VALUES (@id, @rid, @pl, @sig, @seq, @ct, @gid, @mids, @ts, 0)",
+                ("id", id),
+                ("rid", recipientIdEnc),
+                ("pl", payloadEnc),
+                ("sig", sigEnc),
+                ("seq", seqNum),
+                ("ct", (int)ctype),
+                ("gid", (object?)groupId ?? DBNull.Value),
+                ("mids", (object?)memberIdsEnc ?? DBNull.Value),
+                ("ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        }
     }
 
     public List<OutboxItem> LoadOutbox() {
-        var list = new List<OutboxItem>();
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = "SELECT * FROM outbox ORDER BY created_at LIMIT 100";
-        using var r = cmd.ExecuteReader();
-        while (r.Read()) {
-            var midsRaw = r.IsDBNull(r.GetOrdinal("member_ids")) ? null : r.GetString(r.GetOrdinal("member_ids"));
-            list.Add(new OutboxItem(
-                r.GetString(r.GetOrdinal("id")),
-                r.GetString(r.GetOrdinal("recipient_id")),
-                r.GetString(r.GetOrdinal("payload")),
-                r.GetString(r.GetOrdinal("sig")),
-                r.GetInt64(r.GetOrdinal("seq_num")),
-                (ConversationType)r.GetInt32(r.GetOrdinal("conv_type")),
-                r.IsDBNull(r.GetOrdinal("group_id")) ? null : r.GetString(r.GetOrdinal("group_id")),
-                midsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
-            ));
+        lock (_gate) {
+            var list = new List<OutboxItem>();
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = "SELECT * FROM outbox ORDER BY created_at LIMIT 100";
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) {
+                var id = r.GetString(r.GetOrdinal("id"));
+                var recipientId = Crypto.DecryptStr(_key, (byte[])r["recipient_id_enc"]);
+                var payload = Crypto.DecryptStr(_key, (byte[])r["payload_enc"]);
+                var sig = Crypto.DecryptStr(_key, (byte[])r["sig_enc"]);
+                string? midsRaw = null;
+                if (!r.IsDBNull(r.GetOrdinal("member_ids_enc"))) {
+                    midsRaw = Crypto.DecryptStr(_key, (byte[])r["member_ids_enc"]);
+                }
+
+                if (recipientId == null || payload == null || sig == null ||
+                    (!r.IsDBNull(r.GetOrdinal("member_ids_enc")) && midsRaw == null)) {
+                    AppLog.Warn("outbox", $"skipping undecryptable queued item {AppTelemetry.MaskUserId(id)}");
+                    continue;
+                }
+
+                list.Add(new OutboxItem(
+                    id,
+                    recipientId,
+                    payload,
+                    sig,
+                    r.GetInt64(r.GetOrdinal("seq_num")),
+                    (ConversationType)r.GetInt32(r.GetOrdinal("conv_type")),
+                    r.IsDBNull(r.GetOrdinal("group_id")) ? null : r.GetString(r.GetOrdinal("group_id")),
+                    midsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
+                ));
+            }
+            return list;
         }
-        return list;
     }
 
     public void RemoveOutbox(string id) =>
@@ -850,57 +968,87 @@ public partial class Vault : IDisposable {
         ExecParam("INSERT OR REPLACE INTO settings VALUES (@k,@v)", ("k", key), ("v", value));
 
     public string? GetSetting(string key) {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = "SELECT value FROM settings WHERE key=@k";
-        cmd.Parameters.AddWithValue("k", key);
-        return cmd.ExecuteScalar() as string;
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = "SELECT value FROM settings WHERE key=@k";
+            cmd.Parameters.AddWithValue("k", key);
+            return cmd.ExecuteScalar() as string;
+        }
     }
 
     // ── NUKE — Secure vault destruction ────────────────────────────────────
 
     /// <summary>
-    /// Securely destroy the vault.
+    /// Best-effort vault destruction.
     /// 1. Close DB connection
-    /// 2. Overwrite file with random bytes x3 passes (frustrates forensic recovery)
+    /// 2. Overwrite SQLite files with random bytes x3 passes where possible
     /// 3. Delete file
     /// 4. Wipe vault key from memory
     /// </summary>
     public void Nuke() {
-        IsOpen = false;
-        _db?.Close();
-        _db?.Dispose();
-        _db = null;
+        lock (_gate) {
+            IsOpen = false;
+            _db?.Close();
+            _db?.Dispose();
+            _db = null;
+            if (_key.Length > 0) Crypto.Wipe(_key);
+            _key = [];
+        }
+
         GC.Collect();
         GC.WaitForPendingFinalizers();
 
-        if (File.Exists(_path)) {
-            var size = new FileInfo(_path).Length;
-            // 3 overwrite passes
-            for (int pass = 0; pass < 3; pass++) {
-                using var fs = new FileStream(_path, FileMode.Open, FileAccess.Write);
-                var buf = RandomNumberGenerator.GetBytes((int)Math.Min(size, 1024 * 1024));
-                long written = 0;
-                while (written < size) {
-                    var toWrite = (int)Math.Min(buf.Length, size - written);
-                    fs.Write(buf, 0, toWrite);
-                    written += toWrite;
-                }
-                fs.Flush(flushToDisk: true);
-            }
-            File.Delete(_path);
+        lock (_gate) {
+            BestEffortOverwriteAndDelete(_path);
+            BestEffortOverwriteAndDelete(_path + "-wal");
+            BestEffortOverwriteAndDelete(_path + "-shm");
+            DeleteIfExists(SaltPath);
         }
-        if (File.Exists(SaltPath)) File.Delete(SaltPath);
+    }
 
-        Crypto.Wipe(_key);
-        _key = [];
+    static void BestEffortOverwriteAndDelete(string path) {
+        if (!File.Exists(path)) return;
+
+        for (var attempt = 0; attempt < 5; attempt++) {
+            try {
+                var size = new FileInfo(path).Length;
+                if (size > 0) {
+                    for (int pass = 0; pass < 3; pass++) {
+                        using var fs = new FileStream(path, FileMode.Open, FileAccess.Write,
+                            FileShare.ReadWrite | FileShare.Delete);
+                        var buf = RandomNumberGenerator.GetBytes((int)Math.Min(size, 1024 * 1024));
+                        long written = 0;
+                        while (written < size) {
+                            var toWrite = (int)Math.Min(buf.Length, size - written);
+                            fs.Write(buf, 0, toWrite);
+                            written += toWrite;
+                        }
+                        fs.Flush(flushToDisk: true);
+                    }
+                }
+
+                File.Delete(path);
+                return;
+            } catch (IOException) {
+                if (attempt == 4) break;
+                Thread.Sleep(50);
+            } catch (UnauthorizedAccessException) {
+                if (attempt == 4) break;
+                Thread.Sleep(50);
+            }
+        }
+
+        DeleteIfExists(path);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
     void Exec(string sql) {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.ExecuteNonQuery();
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = sql;
+            cmd.ExecuteNonQuery();
+        }
     }
 
     void TryExec(string sql) {
@@ -911,11 +1059,13 @@ public partial class Vault : IDisposable {
     }
 
     void ExecParam(string sql, params (string name, object? val)[] parms) {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = sql;
-        foreach (var (name, val) in parms)
-            cmd.Parameters.AddWithValue("@" + name.TrimStart('@'), val ?? DBNull.Value);
-        cmd.ExecuteNonQuery();
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = sql;
+            foreach (var (name, val) in parms)
+                cmd.Parameters.AddWithValue("@" + name.TrimStart('@'), val ?? DBNull.Value);
+            cmd.ExecuteNonQuery();
+        }
     }
 
     static byte[] ReadOptionalBase64(SqliteDataReader reader, string column) {
@@ -952,10 +1102,12 @@ public partial class Vault : IDisposable {
     }
 
     public void Dispose() {
-        if (_disposed) return;
-        _disposed = true;
-        _db?.Dispose();
-        if (_key.Length > 0) Crypto.Wipe(_key);
+        lock (_gate) {
+            if (_disposed) return;
+            _disposed = true;
+            _db?.Dispose();
+            if (_key.Length > 0) Crypto.Wipe(_key);
+        }
     }
 }
 
@@ -1165,9 +1317,13 @@ public class NetworkClient : IAsyncDisposable {
                 AppLog.Warn("relay", $"key lookup miss for {AppTelemetry.MaskUserId(userId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
                 return null;
             }
+            var keys = ParseVerifiedKeyBundle(userId, result.UserId, result.SignPubKey, result.DhPubKey);
+            if (keys == null) {
+                AppLog.Warn("relay", $"key lookup rejected for {AppTelemetry.MaskUserId(userId)} due to identity mismatch");
+                return null;
+            }
             AppLog.Info("relay", $"key lookup ok for {AppTelemetry.MaskUserId(userId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
-            return (Convert.FromBase64String(result.SignPubKey),
-                    Convert.FromBase64String(result.DhPubKey));
+            return keys;
         } catch (Exception ex) {
             AppLog.Warn("relay", $"key lookup failed for {AppTelemetry.MaskUserId(userId)}: {ex.Message}");
             return null;
@@ -1333,6 +1489,32 @@ public class NetworkClient : IAsyncDisposable {
         if (_hub != null) await _hub.DisposeAsync();
         _connectGate.Dispose();
         _lifetimeCts.Dispose();
+    }
+
+    internal static (byte[] signPub, byte[] dhPub)? ParseVerifiedKeyBundle(
+        string expectedUserId,
+        string? bundleUserId,
+        string signPubKey,
+        string dhPubKey) {
+        var signPub = Convert.FromBase64String(signPubKey);
+        var derivedUserId = Crypto.DeriveUserId(signPub);
+        if (!string.Equals(derivedUserId, expectedUserId, StringComparison.Ordinal)) {
+            return null;
+        }
+        if (!string.IsNullOrWhiteSpace(bundleUserId) &&
+            !string.Equals(bundleUserId, expectedUserId, StringComparison.Ordinal)) {
+            return null;
+        }
+
+        var dhPub = Convert.FromBase64String(dhPubKey);
+        try {
+            using var ecdh = ECDiffieHellman.Create();
+            ecdh.ImportSubjectPublicKeyInfo(dhPub, out _);
+        } catch {
+            return null;
+        }
+
+        return (signPub, dhPub);
     }
 
     record KeyBundleDto(

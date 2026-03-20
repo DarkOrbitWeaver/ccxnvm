@@ -13,7 +13,7 @@ public sealed class VaultRecoveryException : Exception {
 }
 
 public partial class Vault {
-    const int CurrentSchemaVersion = 2;
+    const int CurrentSchemaVersion = 4;
     readonly List<string> _maintenanceActions = [];
 
     public string? LastMaintenanceBackupPath { get; private set; }
@@ -47,10 +47,18 @@ public partial class Vault {
 
         var backupPath = CreateMaintenanceBackup($"pre-schema-v{version}");
         try {
-            TryExec("ALTER TABLE contacts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0");
-            TryExec("ALTER TABLE contacts ADD COLUMN pending_sign_pub TEXT");
-            TryExec("ALTER TABLE contacts ADD COLUMN pending_dh_pub TEXT");
-            TryExec("ALTER TABLE contacts ADD COLUMN key_changed_at INTEGER NOT NULL DEFAULT 0");
+            if (version < 2) {
+                TryExec("ALTER TABLE contacts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0");
+                TryExec("ALTER TABLE contacts ADD COLUMN pending_sign_pub TEXT");
+                TryExec("ALTER TABLE contacts ADD COLUMN pending_dh_pub TEXT");
+                TryExec("ALTER TABLE contacts ADD COLUMN key_changed_at INTEGER NOT NULL DEFAULT 0");
+            }
+            if (version < 3) {
+                MigrateIdentityDisplayNameStorage();
+            }
+            if (version < 4) {
+                MigrateOutboxStorage();
+            }
             SetSetting("schema_version", CurrentSchemaVersion.ToString());
             _maintenanceActions.Add($"migrated schema v{version} -> v{CurrentSchemaVersion}");
         } catch (Exception ex) {
@@ -60,6 +68,175 @@ public partial class Vault {
                 backupPath,
                 ex);
         }
+    }
+
+    void MigrateIdentityDisplayNameStorage() {
+        if (!HasColumn("identity", "display_name")) return;
+
+        var rows = new List<(long Id, string UserId, string DisplayName, byte[] SignPriv, string SignPub, byte[] DhPriv, string DhPub, string ServerUrl, long CreatedAt)>();
+        using (var select = _db!.CreateCommand()) {
+            select.CommandText = @"
+                SELECT id, user_id, display_name, sign_priv, sign_pub, dh_priv, dh_pub, server_url, created_at
+                FROM identity";
+            using var reader = select.ExecuteReader();
+            while (reader.Read()) {
+                rows.Add((
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    (byte[])reader["sign_priv"],
+                    reader.GetString(4),
+                    (byte[])reader["dh_priv"],
+                    reader.GetString(6),
+                    reader.GetString(7),
+                    reader.GetInt64(8)));
+            }
+        }
+
+        using var tx = _db!.BeginTransaction(deferred: false);
+        ExecTx(tx, "ALTER TABLE identity RENAME TO identity_legacy");
+        ExecTx(tx, @"
+            CREATE TABLE identity (
+                id INTEGER PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                display_name_enc BLOB NOT NULL,
+                sign_priv BLOB NOT NULL,
+                sign_pub TEXT NOT NULL,
+                dh_priv BLOB NOT NULL,
+                dh_pub TEXT NOT NULL,
+                server_url TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )");
+
+        foreach (var row in rows) {
+            ExecParamTx(tx, @"
+                INSERT INTO identity
+                (id, user_id, display_name_enc, sign_priv, sign_pub, dh_priv, dh_pub, server_url, created_at)
+                VALUES (@id, @uid, @name, @sp, @spub, @dp, @dpub, @srv, @ts)",
+                ("id", row.Id),
+                ("uid", row.UserId),
+                ("name", Crypto.EncryptStr(_key, row.DisplayName)),
+                ("sp", row.SignPriv),
+                ("spub", row.SignPub),
+                ("dp", row.DhPriv),
+                ("dpub", row.DhPub),
+                ("srv", row.ServerUrl),
+                ("ts", row.CreatedAt));
+        }
+
+        ExecTx(tx, "DROP TABLE identity_legacy");
+        tx.Commit();
+    }
+
+    void MigrateOutboxStorage() {
+        if (!HasColumn("outbox", "payload")) return;
+
+        var rows = new List<(string Id, string RecipientId, string Payload, string Sig, long SeqNum, int ConvType, string? GroupId, string? MemberIds, long CreatedAt, int Attempts)>();
+        using (var select = _db!.CreateCommand()) {
+            select.CommandText = """
+                SELECT id, recipient_id, payload, sig, seq_num, conv_type, group_id, member_ids, created_at, attempts
+                FROM outbox
+                """;
+            using var reader = select.ExecuteReader();
+            while (reader.Read()) {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetInt64(4),
+                    reader.GetInt32(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.IsDBNull(7) ? null : reader.GetString(7),
+                    reader.GetInt64(8),
+                    reader.GetInt32(9)));
+            }
+        }
+
+        using var tx = _db!.BeginTransaction(deferred: false);
+        ExecTx(tx, "ALTER TABLE outbox RENAME TO outbox_legacy");
+        ExecTx(tx, """
+            CREATE TABLE outbox (
+                id TEXT PRIMARY KEY,
+                recipient_id_enc BLOB NOT NULL,
+                payload_enc BLOB NOT NULL,
+                sig_enc BLOB NOT NULL,
+                seq_num INTEGER NOT NULL,
+                conv_type INTEGER NOT NULL DEFAULT 0,
+                group_id TEXT,
+                member_ids_enc BLOB,
+                created_at INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0
+            )
+            """);
+
+        var skipped = 0;
+        foreach (var row in rows) {
+            if (string.IsNullOrWhiteSpace(row.RecipientId) ||
+                string.IsNullOrEmpty(row.Payload) ||
+                string.IsNullOrEmpty(row.Sig) ||
+                row.SeqNum < 1) {
+                skipped++;
+                continue;
+            }
+
+            ExecParamTx(tx, """
+                INSERT INTO outbox
+                (id, recipient_id_enc, payload_enc, sig_enc, seq_num, conv_type, group_id, member_ids_enc, created_at, attempts)
+                VALUES (@id, @rid, @payload, @sig, @seq, @ctype, @gid, @mids, @created, @attempts)
+                """,
+                ("id", row.Id),
+                ("rid", Crypto.EncryptStr(_key, row.RecipientId)),
+                ("payload", Crypto.EncryptStr(_key, row.Payload)),
+                ("sig", Crypto.EncryptStr(_key, row.Sig)),
+                ("seq", row.SeqNum),
+                ("ctype", row.ConvType),
+                ("gid", (object?)row.GroupId ?? DBNull.Value),
+                ("mids", row.MemberIds != null ? Crypto.EncryptStr(_key, row.MemberIds) : DBNull.Value),
+                ("created", row.CreatedAt),
+                ("attempts", row.Attempts));
+        }
+
+        ExecTx(tx, "DROP TABLE outbox_legacy");
+        tx.Commit();
+
+        if (skipped > 0) {
+            _maintenanceActions.Add($"removed {skipped} invalid legacy outbox item(s)");
+        }
+    }
+
+    bool HasColumn(string tableName, string columnName) {
+        if (!IsSafeSqlIdentifier(tableName)) {
+            throw new ArgumentException($"Invalid table name: {tableName}", nameof(tableName));
+        }
+
+        using var cmd = _db!.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({tableName})";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) {
+            if (string.Equals(reader.GetString(reader.GetOrdinal("name")), columnName, StringComparison.Ordinal)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool IsSafeSqlIdentifier(string identifier) {
+        if (string.IsNullOrWhiteSpace(identifier)) return false;
+        var first = identifier[0];
+        var firstIsAsciiLetter = (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z');
+        if (!firstIsAsciiLetter && first != '_') return false;
+
+        for (var i = 1; i < identifier.Length; i++) {
+            var ch = identifier[i];
+            var isAsciiLetter = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+            var isDigit = ch >= '0' && ch <= '9';
+            if (!isAsciiLetter && !isDigit && ch != '_') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     void RunIntegrityChecksAndRepair() {
@@ -76,7 +253,7 @@ public partial class Vault {
 
         var maintenanceBackup = CreateMaintenanceBackup("pre-repair");
         try {
-            using var tx = _db!.BeginTransaction();
+            using var tx = _db!.BeginTransaction(deferred: false);
             foreach (var action in repairActions) {
                 action(tx);
             }
@@ -95,27 +272,29 @@ public partial class Vault {
     }
 
     public string CreateMaintenanceBackup(string reason) {
-        AppPaths.EnsureCreated();
+        lock (_gate) {
+            AppPaths.EnsureCreated();
 
-        var safeReason = SanitizeFileSegment(reason);
-        var backupPath = Path.Combine(
-            AppPaths.BackupsDir,
-            $"vault-{DateTime.UtcNow:yyyyMMdd-HHmmssfff}-{safeReason}-{Guid.NewGuid():N}.db");
+            var safeReason = SanitizeFileSegment(reason);
+            var backupPath = Path.Combine(
+                AppPaths.BackupsDir,
+                $"vault-{DateTime.UtcNow:yyyyMMdd-HHmmssfff}-{safeReason}-{Guid.NewGuid():N}.db");
 
-        using (var cmd = _db!.CreateCommand()) {
-            cmd.CommandText = $"VACUUM INTO '{backupPath.Replace("'", "''")}';";
-            cmd.ExecuteNonQuery();
+            using (var cmd = _db!.CreateCommand()) {
+                cmd.CommandText = $"VACUUM INTO '{backupPath.Replace("'", "''")}';";
+                cmd.ExecuteNonQuery();
+            }
+
+            var saltBackup = backupPath + ".salt";
+            if (File.Exists(SaltPath)) {
+                File.Copy(SaltPath, saltBackup, overwrite: true);
+            }
+
+            LastMaintenanceBackupPath = backupPath;
+            PruneMaintenanceBackups();
+            AppLog.Info("vault", $"created maintenance backup: {backupPath}");
+            return backupPath;
         }
-
-        var saltBackup = backupPath + ".salt";
-        if (File.Exists(SaltPath)) {
-            File.Copy(SaltPath, saltBackup, overwrite: true);
-        }
-
-        LastMaintenanceBackupPath = backupPath;
-        PruneMaintenanceBackups();
-        AppLog.Info("vault", $"created maintenance backup: {backupPath}");
-        return backupPath;
     }
 
     void RestoreBackup(string backupPath) {
@@ -140,17 +319,17 @@ public partial class Vault {
 
         var brokenOutbox = ExecuteScalarInt(@"
             SELECT COUNT(*) FROM outbox
-            WHERE recipient_id IS NULL OR recipient_id = ''
-               OR payload IS NULL OR payload = ''
-               OR sig IS NULL OR sig = ''
+            WHERE recipient_id_enc IS NULL OR length(recipient_id_enc) = 0
+               OR payload_enc IS NULL OR length(payload_enc) = 0
+               OR sig_enc IS NULL OR length(sig_enc) = 0
                OR seq_num < 1");
         if (brokenOutbox > 0) {
             actions.Add(tx => {
                 ExecTx(tx, @"
                     DELETE FROM outbox
-                    WHERE recipient_id IS NULL OR recipient_id = ''
-                       OR payload IS NULL OR payload = ''
-                       OR sig IS NULL OR sig = ''
+                    WHERE recipient_id_enc IS NULL OR length(recipient_id_enc) = 0
+                       OR payload_enc IS NULL OR length(payload_enc) = 0
+                       OR sig_enc IS NULL OR length(sig_enc) = 0
                        OR seq_num < 1");
                 _maintenanceActions.Add($"removed {brokenOutbox} invalid outbox item(s)");
             });
@@ -233,15 +412,19 @@ public partial class Vault {
     }
 
     string ExecuteScalarString(string sql) {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = sql;
-        return Convert.ToString(cmd.ExecuteScalar()) ?? "";
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = sql;
+            return Convert.ToString(cmd.ExecuteScalar()) ?? "";
+        }
     }
 
     int ExecuteScalarInt(string sql) {
-        using var cmd = _db!.CreateCommand();
-        cmd.CommandText = sql;
-        return Convert.ToInt32(cmd.ExecuteScalar());
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = sql;
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
     }
 
     int ExecuteScalarIntTx(SqliteTransaction tx, string sql) {

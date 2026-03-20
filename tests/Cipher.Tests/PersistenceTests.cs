@@ -109,8 +109,8 @@ public class PersistenceTests {
             raw.Open();
             using var cmd = raw.CreateCommand();
             cmd.CommandText = @"
-                INSERT INTO outbox(id, recipient_id, payload, sig, seq_num, conv_type, created_at, attempts)
-                VALUES ('broken-1', '', '', '', 0, 0, 1, 0)";
+                INSERT INTO outbox(id, recipient_id_enc, payload_enc, sig_enc, seq_num, conv_type, created_at, attempts)
+                VALUES ('broken-1', X'', X'', X'', 0, 0, 1, 0)";
             cmd.ExecuteNonQuery();
         }
 

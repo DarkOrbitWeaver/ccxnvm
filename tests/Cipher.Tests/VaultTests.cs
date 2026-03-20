@@ -203,6 +203,23 @@ public class VaultTests {
         Assert.Equal(MessageStatus.Seen, onlyB[0].Status);
     }
 
+    [Fact]
+    public void SettingsPersistAcrossVaultReload() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            vault.SetSetting("conv-muted:dm:alice:bob", "1");
+        }
+
+        using var reopened = new Vault();
+        reopened.Open(vaultPath, key);
+
+        Assert.Equal("1", reopened.GetSetting("conv-muted:dm:alice:bob"));
+    }
+
     static LocalUser CreateUser(string serverUrl, string displayName) {
         var (signPriv, signPub) = Crypto.GenerateSigningKeys();
         var (dhPriv, dhPub) = Crypto.GenerateDhKeys();
