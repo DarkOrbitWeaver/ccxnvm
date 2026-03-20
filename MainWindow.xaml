@@ -54,15 +54,15 @@
             </Grid>
         </DataTemplate>
         <DataTemplate DataType="{x:Type local:MessageViewModel}">
-            <Grid Margin="0,3">
+            <Grid Margin="0,2">
                 <Border x:Name="MessageBubble"
-                        Padding="10,6"
-                        CornerRadius="11"
+                        Padding="{Binding BubblePadding}"
+                        CornerRadius="{Binding BubbleCornerRadius}"
                         BorderBrush="{Binding BubbleBorderBrush}"
-                        BorderThickness="1"
+                        BorderThickness="{Binding BubbleBorderThickness}"
                         Background="{Binding BubbleBackground}"
                         HorizontalAlignment="Left"
-                        MaxWidth="496">
+                        MaxWidth="{Binding BubbleMaxWidth}">
                     <Border.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
                                      Background="{StaticResource GlassOverlay}"
@@ -89,22 +89,17 @@
                                        Margin="10,0,0,0"
                                        DockPanel.Dock="Right" />
                         </DockPanel>
-                        <RichTextBox Grid.Row="1"
-                                     Margin="0,4,0,0"
-                                     IsReadOnly="True"
-                                     IsDocumentEnabled="False"
-                                     IsTabStop="False"
-                                     Focusable="False"
-                                     Background="Transparent"
-                                     BorderThickness="0"
-                                     Padding="0"
-                                     FontFamily="{StaticResource ChatFont}"
-                                     FontSize="{DynamicResource ChatMessageFontSize}"
-                                     ContextMenuService.IsEnabled="False"
-                                     local:MsgBodyHelper.Content="{Binding}"
-                                     local:MsgBodyHelper.RenderFontSize="{DynamicResource ChatMessageFontSize}" />
+                        <TextBlock Grid.Row="1"
+                                   Margin="{Binding MessageBodyMargin}"
+                                   HorizontalAlignment="Left"
+                                   IsHitTestVisible="False"
+                                   FontFamily="{StaticResource ChatFont}"
+                                   FontSize="{DynamicResource ChatMessageFontSize}"
+                                   Foreground="{Binding TextBrush}"
+                                   local:MsgBodyHelper.Content="{Binding}"
+                                   local:MsgBodyHelper.RenderFontSize="{DynamicResource ChatMessageFontSize}" />
                         <StackPanel Grid.Row="2"
-                                    Margin="0,6,0,0"
+                                    Margin="{Binding DeliveryMargin}"
                                     HorizontalAlignment="Right"
                                     Visibility="{Binding IsMine, Converter={StaticResource BoolVis}}">
                             <TextBlock Text="{Binding DeliveryText}"
@@ -490,27 +485,23 @@
                     </Grid.RowDefinitions>
                     <Border Grid.Row="0" CornerRadius="18" Background="{StaticResource GlassPanel}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" Padding="12">
                         <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
                             <Border x:Name="ConversationActionsBar"
-                                    Grid.Row="0"
-                                    Margin="0,0,0,10"
-                                    Padding="10,8"
-                                    CornerRadius="14"
-                                    Background="#14000000"
+                                    Panel.ZIndex="6"
+                                    Margin="0,8,8,0"
+                                    Padding="8,6"
+                                    CornerRadius="12"
+                                    Background="{StaticResource GlassOverlay}"
                                     BorderBrush="{DynamicResource GlassBorder}"
                                     BorderThickness="1"
                                     HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
                                     Visibility="Collapsed">
                                 <StackPanel Orientation="Horizontal">
-                                    <Button x:Name="BtnMuteConversation" Content="Mute" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnMuteConversation_Click" Visibility="Collapsed" />
-                                    <Button x:Name="BtnGroupInvite" Content="Invite Members" Margin="0,0,8,0" Padding="12,6" FontSize="12" Style="{StaticResource GroupBtn}" Click="BtnGroupInvite_Click" Visibility="Collapsed" />
-                                    <Button x:Name="BtnGroupMenu" Content="..." Padding="12,6" FontSize="13" Style="{StaticResource InfoBtn}" Click="BtnGroupMenu_Click" Visibility="Collapsed" />
+                                    <Button x:Name="BtnMuteConversation" Content="Mute" Margin="0,0,8,0" Padding="10,5" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnMuteConversation_Click" Visibility="Collapsed" />
+                                    <Button x:Name="BtnGroupInvite" Content="Invite Members" Margin="0,0,8,0" Padding="10,5" FontSize="12" Style="{StaticResource GroupBtn}" Click="BtnGroupInvite_Click" Visibility="Collapsed" />
+                                    <Button x:Name="BtnGroupMenu" Content="..." Padding="10,5" FontSize="13" Style="{StaticResource InfoBtn}" Click="BtnGroupMenu_Click" Visibility="Collapsed" />
                                 </StackPanel>
                             </Border>
-                            <Grid Grid.Row="1">
                             <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
                                 <TextBlock Text="语"
                                            FontSize="36"
@@ -604,10 +595,10 @@
                                 <TextBlock Text="Loading older messages..." FontSize="11" Foreground="{StaticResource Muted}" />
                             </Border>
                             <ItemsControl x:Name="ToastHost"
-                                          Panel.ZIndex="6"
+                                          Panel.ZIndex="7"
                                           HorizontalAlignment="Right"
                                           VerticalAlignment="Top"
-                                          Margin="0,8,8,0">
+                                          Margin="0,56,8,0">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <StackPanel />
@@ -676,7 +667,6 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
-                            </Grid>
                         </Grid>
                     </Border>
                     <TextBlock x:Name="TypingIndicator" Grid.Row="1" Margin="12,8,12,0" Visibility="Collapsed" FontSize="11" Foreground="{StaticResource Muted}" />
@@ -688,6 +678,25 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Grid Grid.Column="0">
+                                <Border Margin="2"
+                                        CornerRadius="10"
+                                        Background="Transparent"
+                                        IsHitTestVisible="False"
+                                        ClipToBounds="True">
+                                    <TextBlock x:Name="InputPreview"
+                                               Margin="13,10,13,10"
+                                               Visibility="Collapsed"
+                                               FontFamily="{StaticResource ChatFont}"
+                                               FontSize="{DynamicResource ComposerFontSize}"
+                                               Foreground="{StaticResource White}"
+                                               IsHitTestVisible="False"
+                                               local:MsgBodyHelper.PlainText="{Binding ElementName=InputBox, Path=Text}"
+                                               local:MsgBodyHelper.RenderFontSize="{DynamicResource ComposerFontSize}">
+                                        <TextBlock.RenderTransform>
+                                            <TranslateTransform x:Name="InputPreviewTransform" />
+                                        </TextBlock.RenderTransform>
+                                    </TextBlock>
+                                </Border>
                                 <TextBox x:Name="InputBox" Style="{StaticResource TermInput}" FontFamily="{StaticResource ChatFont}" FontSize="{DynamicResource ComposerFontSize}" MinHeight="52" MaxHeight="132" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" IsEnabled="False" KeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged" ToolTip="Enter to send. Shift+Enter for a new line." />
                                 <TextBlock x:Name="InputPlaceholder" Margin="18,0,18,0" VerticalAlignment="Center" Foreground="{StaticResource Dim}" FontSize="{DynamicResource ComposerPlaceholderFontSize}" Opacity="0.82" IsHitTestVisible="False" Text="Choose a conversation to start chatting" />
                             </Grid>
@@ -698,14 +707,25 @@
                                        Source="pack://application:,,,/Assets/OpenMoji/1F60A.png" />
                             </Button>
                             <Button x:Name="BtnSend" Grid.Column="2" Margin="10,0,0,0" Padding="18,10" FontSize="13" Content="Send" IsEnabled="False" Style="{StaticResource AccentBtn}" Click="BtnSend_Click" />
-                            <Popup x:Name="EmojiPopup" Placement="Top" PlacementTarget="{Binding ElementName=BtnEmojiPicker}" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
-                                <Border Padding="10" Width="320" Height="220" CornerRadius="12" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1">
-                                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                                        <WrapPanel x:Name="EmojiPanel" />
-                                    </ScrollViewer>
-                                </Border>
-                            </Popup>
                         </Grid>
+                    </Border>
+                    <Border x:Name="EmojiPickerHost"
+                            Grid.RowSpan="3"
+                            Panel.ZIndex="14"
+                            Width="356"
+                            Height="286"
+                            Padding="10"
+                            CornerRadius="16"
+                            Background="{StaticResource GlassOverlay}"
+                            BorderBrush="{DynamicResource GlassBorder}"
+                            BorderThickness="1"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Bottom"
+                            Margin="0,0,78,118"
+                            Visibility="Collapsed">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <WrapPanel x:Name="EmojiPanel" />
+                        </ScrollViewer>
                     </Border>
                 </Grid>
             </Grid>

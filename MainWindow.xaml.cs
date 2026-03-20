@@ -175,6 +175,7 @@ public class MessageViewModel : INotifyPropertyChanged {
     public long   SeqNum         { get; set; }
     public bool   IsMine         { get; set; }
     public bool   IsGroup        { get; set; }
+    public bool   UseBubblelessLayout { get; set; }
     public ObservableCollection<SeenByChipViewModel> SeenBy { get; } = [];
     public MessageStatus Status {
         get => _status;
@@ -198,8 +199,18 @@ public class MessageViewModel : INotifyPropertyChanged {
     public Brush  TextBrush   => B.MessageText;
     public Brush  NameBrush   => SenderColorBrush;
     public Brush  RowBg       => B.Transparent;
-    public Brush  BubbleBackground => IsMine ? B.MineBubble : B.PeerBubble;
-    public Brush  BubbleBorderBrush => IsMine ? B.BubbleBorderMine : B.BubbleBorderTheirs;
+    public Brush  BubbleBackground => UseBubblelessLayout
+        ? B.Transparent
+        : IsMine ? B.MineBubble : B.PeerBubble;
+    public Brush  BubbleBorderBrush => UseBubblelessLayout
+        ? B.Transparent
+        : IsMine ? B.BubbleBorderMine : B.BubbleBorderTheirs;
+    public Thickness BubbleBorderThickness => UseBubblelessLayout ? new Thickness(0) : new Thickness(1);
+    public Thickness BubblePadding => UseBubblelessLayout ? new Thickness(0) : new Thickness(6, 3, 6, 4);
+    public CornerRadius BubbleCornerRadius => UseBubblelessLayout ? new CornerRadius(0) : new CornerRadius(10);
+    public double BubbleMaxWidth => UseBubblelessLayout ? 360d : 400d;
+    public Thickness MessageBodyMargin => UseBubblelessLayout ? new Thickness(0, 2, 0, 0) : new Thickness(0, 2, 0, 0);
+    public Thickness DeliveryMargin => UseBubblelessLayout ? new Thickness(0, 4, 0, 0) : new Thickness(0, 4, 0, 0);
     public bool HasSeenBy => SeenBy.Count > 0;
     public bool HasDeliveryText => !string.IsNullOrWhiteSpace(DeliveryText);
     public string StatusChar  => IsMine ? Status switch {
@@ -245,6 +256,7 @@ public sealed class ToastViewModel {
     public Brush ForegroundBrush { get; init; } = B.MessageText;
     public Brush DotBrush { get; init; } = B.Green;
     public bool CanDismiss { get; init; }
+    public string Category { get; init; } = "";
 }
 
 sealed class GroupInvitePayload {
@@ -290,6 +302,7 @@ public partial class MainWindow : Window {
     bool _loadingHistory = false;
     bool _isNearBottom = true;
     ScrollViewer? _msgScrollViewer;
+    ScrollViewer? _inputScrollViewer;
 
     // Per-conversation shared secrets (cached in memory, not re-derived every message)
     readonly Dictionary<string, byte[]> _convKeys = [];
@@ -357,6 +370,7 @@ public partial class MainWindow : Window {
             if (_msgScrollViewer != null)
                 _msgScrollViewer.ScrollChanged += OnScrollChanged;
         };
+        InputBox.Loaded += (_, _) => InitializeComposerPreview();
 
         // Outbox retry timer: every 5 seconds try to flush pending messages
         _outboxTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
@@ -560,6 +574,7 @@ public partial class MainWindow : Window {
         BtnEmojiPicker.IsEnabled = canCompose;
         BtnSend.IsEnabled = canCompose && !string.IsNullOrWhiteSpace(InputBox.Text);
         UpdateInputPlaceholderState();
+        UpdateInputPreviewState();
     }
 
     void UpdateInputPlaceholderState() {
@@ -571,6 +586,38 @@ public partial class MainWindow : Window {
         InputPlaceholder.Visibility = string.IsNullOrWhiteSpace(InputBox.Text)
             ? Visibility.Visible
             : Visibility.Collapsed;
+    }
+
+    void InitializeComposerPreview() {
+        if (InputBox == null) return;
+        _inputScrollViewer = GetScrollViewer(InputBox);
+        if (_inputScrollViewer != null) {
+            _inputScrollViewer.ScrollChanged -= ComposerPreviewScrollChanged;
+            _inputScrollViewer.ScrollChanged += ComposerPreviewScrollChanged;
+        }
+
+        UpdateInputPreviewState();
+    }
+
+    void ComposerPreviewScrollChanged(object? sender, ScrollChangedEventArgs e) {
+        if (InputPreviewTransform != null) {
+            InputPreviewTransform.Y = -e.VerticalOffset;
+        }
+    }
+
+    void UpdateInputPreviewState() {
+        if (InputBox == null || InputPreview == null) return;
+
+        var hasEmoji = MsgBodyHelper.ContainsEmoji(InputBox.Text);
+        var showPreview = hasEmoji && !string.IsNullOrWhiteSpace(InputBox.Text);
+        InputPreview.Visibility = showPreview ? Visibility.Visible : Visibility.Collapsed;
+        InputBox.Foreground = showPreview
+            ? System.Windows.Media.Brushes.Transparent
+            : (Brush)FindResource("White");
+
+        if (InputPreviewTransform != null) {
+            InputPreviewTransform.Y = -(_inputScrollViewer?.VerticalOffset ?? 0);
+        }
     }
 
     void StartTypingIndicator() {
@@ -646,8 +693,8 @@ public partial class MainWindow : Window {
         }
         if (!hasConversation)
             HideTypingIndicator();
-        if (!hasConversation && EmojiPopup != null)
-            EmojiPopup.IsOpen = false;
+        if (!hasConversation && EmojiPickerHost != null)
+            EmojiPickerHost.Visibility = Visibility.Collapsed;
         if (!hasConversation && GroupMenuPopup != null)
             GroupMenuPopup.IsOpen = false;
         UpdateComposerState();
@@ -697,13 +744,14 @@ public partial class MainWindow : Window {
             SetSidebarStatus("open a conversation first to send emojis");
             return;
         }
-        EmojiPopup.IsOpen = !EmojiPopup.IsOpen;
+        EmojiPickerHost.Visibility = EmojiPickerHost.Visibility == Visibility.Visible
+            ? Visibility.Collapsed
+            : Visibility.Visible;
     }
 
     void BtnEmojiSymbol_Click(object? sender, RoutedEventArgs e) {
         if (sender is not Button { Tag: OpenMojiEntry entry }) return;
         InsertEmoji(entry.Emoji);
-        EmojiPopup.IsOpen = false;
     }
 
     void InsertEmoji(string emoji) {
@@ -1114,6 +1162,7 @@ public partial class MainWindow : Window {
 
         _net.OnConnected += () => Dispatcher.InvokeAsync(() => {
             AppLog.Info("relay", "connected");
+            ApplyConnectionState(RelayConnectionState.Connected, "relay connected");
             // Announce presence to all contacts
             var ids = _convs.Where(c => !c.IsGroup).Select(c => c.ContactData!.UserId).ToList();
             _ = _net.AnnouncePresenceAsync(ids);
@@ -1126,6 +1175,7 @@ public partial class MainWindow : Window {
 
         _net.OnDisconnected += () => Dispatcher.InvokeAsync(() => {
             AppLog.Warn("relay", "disconnected");
+            ApplyConnectionState(RelayConnectionState.Reconnecting, "relay connection lost - retrying...");
             foreach (var c in _convs.Where(c => !c.IsGroup))
                 c.IsOnline = false;
         });
@@ -1161,6 +1211,8 @@ public partial class MainWindow : Window {
                 ConnStatusText.Text = "online";
                 ConnStatusText.Foreground = (Brush)FindResource("Green");
                 ClearTransientRelayStatus();
+                if (!string.IsNullOrWhiteSpace(detail))
+                    SetSidebarStatus(detail, transientRelay: true);
                 break;
             case RelayConnectionState.Connecting:
                 ConnDot.Foreground = (Brush)FindResource("Amber");
@@ -1186,11 +1238,17 @@ public partial class MainWindow : Window {
         }
     }
 
-    void ClearTransientRelayStatus() { }
+    void ClearTransientRelayStatus() {
+        for (var i = _toasts.Count - 1; i >= 0; i--) {
+            if (string.Equals(_toasts[i].Category, "relay-status", StringComparison.Ordinal)) {
+                _toasts.RemoveAt(i);
+            }
+        }
+    }
 
     void SetSidebarStatus(string message, bool transientRelay = false) {
         if (string.IsNullOrWhiteSpace(message)) return;
-        ShowToast(message, ClassifyToastSeverity(message));
+        ShowToast(message, ClassifyToastSeverity(message), transientRelay ? "relay-status" : "");
     }
 
     static ToastSeverity ClassifyToastSeverity(string message) {
@@ -1216,9 +1274,17 @@ public partial class MainWindow : Window {
         return clone;
     }
 
-    void ShowToast(string message, ToastSeverity severity) {
+    void ShowToast(string message, ToastSeverity severity, string category = "") {
         if (_toasts.Any(t => string.Equals(t.Message, message, StringComparison.Ordinal)))
             return;
+
+        if (!string.IsNullOrWhiteSpace(category)) {
+            for (var i = _toasts.Count - 1; i >= 0; i--) {
+                if (string.Equals(_toasts[i].Category, category, StringComparison.Ordinal)) {
+                    _toasts.RemoveAt(i);
+                }
+            }
+        }
 
         var accent = severity switch {
             ToastSeverity.Error => B.Red,
@@ -1235,7 +1301,8 @@ public partial class MainWindow : Window {
                 ToastSeverity.Warning => B.AmberText,
                 _ => B.TextGreen
             },
-            CanDismiss = severity != ToastSeverity.Info
+            CanDismiss = severity != ToastSeverity.Info,
+            Category = category
         };
 
         _toasts.Insert(0, toast);
@@ -1722,23 +1789,35 @@ public partial class MainWindow : Window {
     /// Only auto-scrolls if user was already near bottom.
     /// </summary>
     void AddMessageToList(MessageViewModel vm) {
+        var shouldStickToBottom = IsMessageListNearBottom();
         ApplyReceiptUi(vm);
         _messages.Add(vm);
         _msgOffset++;
         _msgTotal++;
 
-        if (_isNearBottom)
+        _isNearBottom = shouldStickToBottom;
+        if (shouldStickToBottom) {
+            Dispatcher.InvokeAsync(() => {
+                MessageList.ScrollIntoView(vm);
+                ScrollToBottom();
+            }, DispatcherPriority.Background);
             Dispatcher.InvokeAsync(ScrollToBottom, DispatcherPriority.Loaded);
+        }
     }
 
     void ScrollToBottom() {
         _msgScrollViewer?.ScrollToEnd();
+        _isNearBottom = true;
     }
+
+    bool IsMessageListNearBottom(double threshold = 84d) =>
+        _msgScrollViewer == null ||
+        _msgScrollViewer.VerticalOffset >= _msgScrollViewer.ScrollableHeight - threshold;
 
     // ── Sending messages ──────────────────────────────────────────────────
 
     void InputBox_KeyDown(object s, KeyEventArgs e) {
-        if (e.Key == Key.Enter && !Keyboard.IsKeyDown(Key.LeftShift) &&
+        if ((e.Key is Key.Enter or Key.Return) && !Keyboard.IsKeyDown(Key.LeftShift) &&
             !Keyboard.IsKeyDown(Key.RightShift)) {
             e.Handled = true;
             RunUiTask(SendMessageAsync, "send message");
@@ -1756,7 +1835,6 @@ public partial class MainWindow : Window {
     async Task SendMessageAsync() {
         var text = InputBox.Text.Trim();
         if (string.IsNullOrEmpty(text) || _activeConv == null || _user == null) return;
-        EmojiPopup.IsOpen = false;
         AppLog.Info("send", $"queueing {_activeConv.IsGroup switch { true => "group", false => "direct" }} message for {AppTelemetry.DescribeConversation(_activeConvId, _activeConv.IsGroup)} length={text.Length}");
         InputBox.Clear();
 
@@ -3062,6 +3140,8 @@ public partial class MainWindow : Window {
             IsGroup = msg.ConvType == ConversationType.Group,
             Status = msg.Status
         };
+        var renderProfile = MsgBodyHelper.BuildRenderProfile(msg.Content, GetCurrentChatFontSize());
+        vm.UseBubblelessLayout = renderProfile.UseBubblelessLayout;
         vm.SenderColorBrush = msg.IsMine
             ? B.AmberDim
             : msg.ConvType == ConversationType.Group

@@ -52,7 +52,7 @@ public partial class MainWindow {
         SetAutomationId(LoadMoreBar, "LoadMoreBar");
         SetAutomationId(TypingIndicator, "TypingIndicator");
         SetAutomationId(BtnEmojiPicker, "BtnEmojiPicker");
-        SetAutomationId(EmojiPopup, "EmojiPopup");
+        SetAutomationId(EmojiPickerHost, "EmojiPopup");
         SetAutomationId(EmojiPanel, "EmojiPanel");
         SetAutomationId(InputBox, "InputBox");
         SetAutomationId(BtnSend, "BtnSend");

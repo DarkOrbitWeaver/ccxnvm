@@ -46,7 +46,7 @@ public sealed class VelopackUpdateBackend : IAppUpdateBackend {
     }
 
     public bool IsAvailable =>
-        _manager.IsInstalled && File.Exists(Path.Combine(AppContext.BaseDirectory, "Update.exe"));
+        _manager.IsInstalled && ResolveUpdateExePath(AppContext.BaseDirectory) != null;
 
     public string CurrentVersion =>
         _manager.CurrentVersion?.ToString() ?? AppInfo.DisplayVersion;
@@ -84,6 +84,24 @@ public sealed class VelopackUpdateBackend : IAppUpdateBackend {
         }
 
         throw new InvalidOperationException("Update payload is not a Velopack asset.");
+    }
+
+    internal static string? ResolveUpdateExePath(string appBaseDirectory) {
+        if (string.IsNullOrWhiteSpace(appBaseDirectory)) return null;
+
+        var normalizedBaseDirectory = Path.GetFullPath(appBaseDirectory);
+        var candidates = new[] {
+            Path.Combine(normalizedBaseDirectory, "Update.exe"),
+            Path.GetFullPath(Path.Combine(normalizedBaseDirectory, "..", "Update.exe"))
+        };
+
+        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase)) {
+            if (File.Exists(candidate)) {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }
 

@@ -32,6 +32,45 @@ public class ReleaseUpdaterTests {
         Assert.Equal(100, snapshot.DownloadProgress);
     }
 
+    [Fact]
+    public void ResolveUpdateExePathFindsInstalledParentLayout() {
+        var root = Path.Combine(Path.GetTempPath(), $"cipher-updater-{Guid.NewGuid():N}");
+        var current = Path.Combine(root, "current");
+        Directory.CreateDirectory(current);
+
+        try {
+            var updateExe = Path.Combine(root, "Update.exe");
+            File.WriteAllText(updateExe, "stub");
+
+            var resolved = VelopackUpdateBackend.ResolveUpdateExePath(current);
+
+            Assert.Equal(updateExe, resolved);
+        } finally {
+            if (Directory.Exists(root)) {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void ResolveUpdateExePathFindsSiblingLayout() {
+        var root = Path.Combine(Path.GetTempPath(), $"cipher-updater-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+
+        try {
+            var updateExe = Path.Combine(root, "Update.exe");
+            File.WriteAllText(updateExe, "stub");
+
+            var resolved = VelopackUpdateBackend.ResolveUpdateExePath(root);
+
+            Assert.Equal(updateExe, resolved);
+        } finally {
+            if (Directory.Exists(root)) {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     sealed class FakeBackend : IAppUpdateBackend {
         public bool IsAvailableValue { get; set; }
         public string CurrentVersionValue { get; set; } = "1.0.0";

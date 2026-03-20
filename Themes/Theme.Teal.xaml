@@ -11,4 +11,13 @@
     <Color x:Key="AccentButtonBorderColor">#4D58D7B6</Color>
     <Color x:Key="AccentButtonHoverBorderColor">#7A6EE7C8</Color>
     <Color x:Key="ConversationSelectedColor">#B3142C3A</Color>
+    <Color x:Key="GlassPanelColor">#8810222A</Color>
+    <Color x:Key="GlassOverlayColor">#CC11252F</Color>
+    <Color x:Key="GlassInputBgColor">#77162D35</Color>
+    <Color x:Key="GlassInputFocusBgColor">#99203947</Color>
+    <Color x:Key="BubbleMineColor">#B8233A40</Color>
+    <Color x:Key="BubbleTheirsColor">#A0142C31</Color>
+    <Color x:Key="AppBackgroundStartColor">#071015</Color>
+    <Color x:Key="AppBackgroundMidColor">#0E2430</Color>
+    <Color x:Key="AppBackgroundEndColor">#091117</Color>
 </ResourceDictionary>

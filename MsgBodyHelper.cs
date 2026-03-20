@@ -9,10 +9,18 @@ using Application = System.Windows.Application;
 using FontFamily = System.Windows.Media.FontFamily;
 using Image = System.Windows.Controls.Image;
 using RichTextBox = System.Windows.Controls.RichTextBox;
+using TextBlock = System.Windows.Controls.TextBlock;
 
 namespace Cipher;
 
 public static class MsgBodyHelper {
+    public sealed record MessageRenderProfile(
+        bool IsEmojiOnly,
+        int EmojiCount,
+        bool UseBubblelessLayout,
+        double EffectiveFontSize
+    );
+
     static readonly FontFamily EmojiFont = new("Segoe UI Emoji");
     static readonly IReadOnlyDictionary<string, OpenMojiEntry> EmojiEntries =
         OpenMojiCatalog.Entries.ToDictionary(entry => entry.Emoji, StringComparer.Ordinal);
@@ -32,6 +40,13 @@ public static class MsgBodyHelper {
             typeof(MsgBodyHelper),
             new PropertyMetadata(15d, OnRenderFontSizeChanged));
 
+    public static readonly DependencyProperty PlainTextProperty =
+        DependencyProperty.RegisterAttached(
+            "PlainText",
+            typeof(string),
+            typeof(MsgBodyHelper),
+            new PropertyMetadata("", OnPlainTextChanged));
+
     public static void SetContent(DependencyObject element, MessageViewModel value) =>
         element.SetValue(ContentProperty, value);
 
@@ -46,20 +61,66 @@ public static class MsgBodyHelper {
             ? fontSize
             : 15d;
 
+    public static void SetPlainText(DependencyObject element, string value) =>
+        element.SetValue(PlainTextProperty, value);
+
+    public static string GetPlainText(DependencyObject element) =>
+        element.GetValue(PlainTextProperty) as string ?? "";
+
     static void OnContentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) {
-        if (d is not RichTextBox rtb) return;
-        rtb.Document = BuildDocument(e.NewValue as MessageViewModel, GetRenderFontSize(rtb));
+        if (d is RichTextBox rtb) {
+            rtb.Document = BuildDocument(e.NewValue as MessageViewModel, GetRenderFontSize(rtb));
+            return;
+        }
+
+        if (d is TextBlock textBlock) {
+            RenderTextBlock(
+                textBlock,
+                (e.NewValue as MessageViewModel)?.Content ?? "",
+                (e.NewValue as MessageViewModel)?.TextBrush ?? textBlock.Foreground,
+                GetRenderFontSize(textBlock));
+        }
     }
 
     static void OnRenderFontSizeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) {
-        if (d is not RichTextBox rtb) return;
-        rtb.Document = BuildDocument(GetContent(rtb), GetRenderFontSize(rtb));
+        if (d is RichTextBox rtb) {
+            rtb.Document = BuildDocument(GetContent(rtb), GetRenderFontSize(rtb));
+            return;
+        }
+
+        if (d is TextBlock textBlock) {
+            var vm = GetContent(textBlock);
+            if (vm != null) {
+                RenderTextBlock(textBlock, vm.Content, vm.TextBrush, GetRenderFontSize(textBlock));
+            } else {
+                RenderTextBlock(textBlock, GetPlainText(textBlock), textBlock.Foreground, GetRenderFontSize(textBlock));
+            }
+        }
     }
+
+    static void OnPlainTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) {
+        if (d is not TextBlock textBlock) return;
+        RenderTextBlock(textBlock, e.NewValue as string ?? "", textBlock.Foreground, GetRenderFontSize(textBlock));
+    }
+
+    public static MessageRenderProfile BuildRenderProfile(string? text, double baseFontSize) {
+        var normalized = text ?? "";
+        var emojiCount = CountEmojiElements(normalized);
+        var emojiOnly = IsEmojiOnlyMessage(normalized);
+        return new MessageRenderProfile(
+            IsEmojiOnly: emojiOnly,
+            EmojiCount: emojiCount,
+            UseBubblelessLayout: emojiOnly && emojiCount is > 0 and <= 3,
+            EffectiveFontSize: emojiOnly ? baseFontSize * 2d : baseFontSize
+        );
+    }
+
+    public static bool ContainsEmoji(string? text) =>
+        CountEmojiElements(text ?? "") > 0;
 
     static FlowDocument BuildDocument(MessageViewModel? vm, double fontSize) {
         var text = vm?.Content ?? "";
-        var emojiOnly = IsEmojiOnlyMessage(text);
-        var effectiveFontSize = emojiOnly ? fontSize * 2d : fontSize;
+        var renderProfile = BuildRenderProfile(text, fontSize);
 
         var doc = new FlowDocument {
             PagePadding = new Thickness(0),
@@ -69,7 +130,9 @@ public static class MsgBodyHelper {
 
         var paragraph = new Paragraph {
             Margin = new Thickness(0),
-            LineHeight = emojiOnly ? effectiveFontSize * 1.08 : effectiveFontSize * 1.35
+            LineHeight = renderProfile.IsEmojiOnly
+                ? renderProfile.EffectiveFontSize * 1.05
+                : renderProfile.EffectiveFontSize * 1.28
         };
 
         var textBrush = vm?.TextBrush ?? System.Windows.Media.Brushes.White;
@@ -82,7 +145,10 @@ public static class MsgBodyHelper {
             var element = enumerator.GetTextElement();
             if (LooksLikeEmoji(element)) {
                 FlushPlainText();
-                paragraph.Inlines.Add(BuildEmojiInline(element, effectiveFontSize, emojiOnly));
+                paragraph.Inlines.Add(BuildEmojiInline(
+                    element,
+                    renderProfile.EffectiveFontSize,
+                    renderProfile.IsEmojiOnly));
             } else {
                 plainText.Append(element);
             }
@@ -97,7 +163,47 @@ public static class MsgBodyHelper {
             paragraph.Inlines.Add(new Run(plainText.ToString()) {
                 Foreground = textBrush,
                 FontFamily = textFont,
-                FontSize = effectiveFontSize
+                FontSize = renderProfile.EffectiveFontSize
+            });
+            plainText.Clear();
+        }
+    }
+
+    static void RenderTextBlock(TextBlock textBlock, string text, System.Windows.Media.Brush textBrush, double fontSize) {
+        var renderProfile = BuildRenderProfile(text, fontSize);
+        var textFont = Application.Current?.TryFindResource("ChatFont") as FontFamily
+            ?? new FontFamily("Segoe UI");
+
+        textBlock.Inlines.Clear();
+        textBlock.TextWrapping = TextWrapping.Wrap;
+        textBlock.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+        textBlock.LineHeight = renderProfile.IsEmojiOnly
+            ? renderProfile.EffectiveFontSize * 1.05
+            : renderProfile.EffectiveFontSize * 1.28;
+
+        var plainText = new StringBuilder();
+        var enumerator = StringInfo.GetTextElementEnumerator(text);
+        while (enumerator.MoveNext()) {
+            var element = enumerator.GetTextElement();
+            if (LooksLikeEmoji(element)) {
+                FlushPlainText();
+                textBlock.Inlines.Add(BuildEmojiInline(
+                    element,
+                    renderProfile.EffectiveFontSize,
+                    renderProfile.IsEmojiOnly));
+            } else {
+                plainText.Append(element);
+            }
+        }
+
+        FlushPlainText();
+
+        void FlushPlainText() {
+            if (plainText.Length == 0) return;
+            textBlock.Inlines.Add(new Run(plainText.ToString()) {
+                Foreground = textBrush,
+                FontFamily = textFont,
+                FontSize = renderProfile.EffectiveFontSize
             });
             plainText.Clear();
         }
@@ -161,6 +267,23 @@ public static class MsgBodyHelper {
         }
 
         return sawEmoji;
+    }
+
+    static int CountEmojiElements(string text) {
+        if (string.IsNullOrWhiteSpace(text)) {
+            return 0;
+        }
+
+        var count = 0;
+        var enumerator = StringInfo.GetTextElementEnumerator(text);
+        while (enumerator.MoveNext()) {
+            var element = enumerator.GetTextElement();
+            if (!string.IsNullOrWhiteSpace(element) && LooksLikeEmoji(element)) {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     static ImageSource? GetEmojiImageSource(OpenMojiEntry entry) {
