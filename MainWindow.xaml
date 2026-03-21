@@ -686,7 +686,7 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Grid Grid.Column="0">
-                                <RichTextBox x:Name="InputBox" Style="{StaticResource TermRichInput}" FontFamily="{StaticResource ChatFont}" FontSize="{DynamicResource ComposerFontSize}" MinHeight="52" MaxHeight="132" IsEnabled="False" KeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged" ToolTip="Enter to send. Shift+Enter for a new line." />
+                                <RichTextBox x:Name="InputBox" Style="{StaticResource TermRichInput}" FontFamily="{StaticResource ChatFont}" FontSize="{DynamicResource ComposerFontSize}" MinHeight="52" MaxHeight="132" IsEnabled="False" PreviewKeyDown="InputBox_KeyDown" TextChanged="InputBox_TextChanged" ToolTip="Enter to send. Shift+Enter for a new line." />
                                 <TextBlock x:Name="InputPlaceholder" Margin="18,0,18,0" VerticalAlignment="Center" Foreground="{StaticResource Dim}" FontSize="{DynamicResource ComposerPlaceholderFontSize}" Opacity="0.82" IsHitTestVisible="False" Text="Choose a conversation to start chatting" />
                             </Grid>
                             <Button x:Name="BtnEmojiPicker" Grid.Column="1" Margin="10,0,0,0" Padding="10,10" FontSize="16" Style="{StaticResource TermBtn}" Click="BtnEmojiPicker_Click" ToolTip="Open OpenMoji picker">

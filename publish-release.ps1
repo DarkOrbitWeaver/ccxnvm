@@ -2,7 +2,8 @@ param(
     [string]$Runtime = "win-x64",
     [string]$Channel = "stable",
     [string]$Version,
-    [switch]$IncludePortable
+    [switch]$IncludePortable,
+    [switch]$CleanReleaseHistory
 )
 
 $projectPath = ".\CipherClient.csproj"
@@ -41,7 +42,10 @@ New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
 
 Get-ChildItem $publishDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
-Get-ChildItem $releaseDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+
+if ($CleanReleaseHistory) {
+    Get-ChildItem $releaseDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+}
 
 dotnet publish $projectPath `
   -c Release `
@@ -116,4 +120,9 @@ if ($IncludePortable) {
 } else {
     Write-Host "Portable zip skipped. Use -IncludePortable if you want a separate portable download."
 }
-Write-Host "Upload the setup exe, full .nupkg, and metadata files from $releaseDir to a GitHub Release."
+if ($CleanReleaseHistory) {
+    Write-Host "Release history was cleaned first, so this run may only produce a full package."
+} else {
+    Write-Host "Previous packages were kept so Velopack can generate smaller delta patches when possible."
+}
+Write-Host "Upload the setup exe, generated .nupkg files, and metadata files from $releaseDir to a GitHub Release."
