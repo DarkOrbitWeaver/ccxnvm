@@ -1,0 +1,23 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Color x:Key="GreenColor">#F0E8FF</Color>
+    <Color x:Key="DimGreenColor">#B595D1</Color>
+    <Color x:Key="TealAccentColor">#D8B7FF</Color>
+    <Color x:Key="GlassBorderColor">#3AD8B7FF</Color>
+    <Color x:Key="BubbleBorderMineColor">#50E0C7FF</Color>
+    <Color x:Key="BubbleBorderTheirsColor">#33B58AD8</Color>
+    <Color x:Key="AccentButtonFillColor">#20A984D0</Color>
+    <Color x:Key="AccentButtonHoverFillColor">#30D8B7FF</Color>
+    <Color x:Key="AccentButtonBorderColor">#58D8B7FF</Color>
+    <Color x:Key="AccentButtonHoverBorderColor">#88F0E0FF</Color>
+    <Color x:Key="ConversationSelectedColor">#B31B182B</Color>
+    <Color x:Key="GlassPanelColor">#A111111C</Color>
+    <Color x:Key="GlassOverlayColor">#DD151520</Color>
+    <Color x:Key="GlassInputBgColor">#93181824</Color>
+    <Color x:Key="GlassInputFocusBgColor">#AA232233</Color>
+    <Color x:Key="BubbleMineColor">#C1272038</Color>
+    <Color x:Key="BubbleTheirsColor">#B0141524</Color>
+    <Color x:Key="AppBackgroundStartColor">#101020</Color>
+    <Color x:Key="AppBackgroundMidColor">#201020</Color>
+    <Color x:Key="AppBackgroundEndColor">#161622</Color>
+</ResourceDictionary>

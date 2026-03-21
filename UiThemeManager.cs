@@ -1,5 +1,7 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Application = System.Windows.Application;
 using Color = System.Windows.Media.Color;
 
@@ -26,13 +28,18 @@ public static class UiThemeManager {
         ("BubbleTheirsColor", "BubbleTheirs")
     ];
 
-    public static bool TryApplyTheme(string themeFile) {
+    public static ThemePresetDefinition CurrentPreset { get; private set; } = ThemePresetCatalog.Default;
+    public static event Action<ThemePresetDefinition>? PresetApplied;
+
+    public static bool TryApplyThemePreset(string? presetId) {
         if (Application.Current?.Resources is not ResourceDictionary resources)
             return false;
 
+        var preset = ThemePresetCatalog.GetById(presetId);
+
         try {
             var next = new ResourceDictionary {
-                Source = new Uri($"Themes/{themeFile}", UriKind.Relative)
+                Source = new Uri($"Themes/{preset.PaletteThemeFile}", UriKind.Relative)
             };
 
             var merged = resources.MergedDictionaries;
@@ -48,11 +55,31 @@ public static class UiThemeManager {
                 merged.Add(next);
 
             ApplyLivePalette(resources, next);
+            CurrentPreset = preset;
+            PresetApplied?.Invoke(preset);
             RefreshOpenWindows();
             return true;
         } catch (Exception ex) {
-            AppLog.Warn("theme", $"failed to apply {themeFile}: {ex.Message}");
+            AppLog.Warn("theme", $"failed to apply preset {preset.Id}: {ex.Message}");
             return false;
+        }
+    }
+
+    public static ImageSource? LoadImageSource(string? packUriOrPath) {
+        if (string.IsNullOrWhiteSpace(packUriOrPath)) return null;
+
+        try {
+            var uri = new Uri(packUriOrPath, UriKind.Absolute);
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.UriSource = uri;
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.EndInit();
+            image.Freeze();
+            return image;
+        } catch (Exception ex) {
+            AppLog.Warn("theme", $"failed to load themed image {Path.GetFileName(packUriOrPath)}: {ex.Message}");
+            return null;
         }
     }
 

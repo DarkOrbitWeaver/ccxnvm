@@ -30,6 +30,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using MediaColor = System.Windows.Media.Color;
 
 namespace Cipher;
 
@@ -357,6 +358,7 @@ public partial class MainWindow : Window {
     const string UiThemeSettingKey = "ui-theme";
     const string UiChatFontSizeSettingKey = "ui-chat-font-size";
     const string DefaultThemeFile = "Theme.Teal.xaml";
+    const string DefaultThemePresetId = ThemePresetCatalog.DefaultPresetId;
     const double DefaultChatFontSize = 17d;
     const int MaxSeqTrackerConversations = 512;
     const int MaxReceiptCacheMessages = 5_000;
@@ -370,6 +372,7 @@ public partial class MainWindow : Window {
     bool _networkEventsWired;
     bool _flushingOutbox;
     int _typingIndicatorDotCount;
+    string _activeThemePresetId = DefaultThemePresetId;
     string _activeThemeFile = DefaultThemeFile;
     AppShellPreferences _shellPreferences = new();
     Forms.NotifyIcon? _notifyIcon;
@@ -392,7 +395,8 @@ public partial class MainWindow : Window {
         InitializeComposerInput();
         AppLog.Info("ui", "main window initialized");
         InitializeShellPreferences();
-        ApplyTheme(_shellPreferences.ThemeFile, persist: false);
+        UiThemeManager.PresetApplied += HandleThemePresetApplied;
+        ApplyThemePreset(_shellPreferences.ThemePresetId, persist: false);
         ApplyChatFontSize(_shellPreferences.ChatFontSize, persist: false);
         ApplyBranding();
         ApplyUxPolish();
@@ -1134,26 +1138,29 @@ public partial class MainWindow : Window {
         AuthStatus.Visibility = string.IsNullOrEmpty(msg) ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    void ApplyTheme(string themeFile, bool persist = true) {
-        if (!UiThemeManager.TryApplyTheme(themeFile)) {
-            ShowToast($"theme unavailable: {themeFile}", ToastSeverity.Warning);
+    void ApplyThemePreset(string presetId, bool persist = true) {
+        var preset = ThemePresetCatalog.GetById(presetId);
+        if (!UiThemeManager.TryApplyThemePreset(preset.Id)) {
+            ShowToast($"theme unavailable: {preset.DisplayName}", ToastSeverity.Warning);
             return;
         }
 
-        _activeThemeFile = themeFile;
+        _activeThemePresetId = preset.Id;
+        _activeThemeFile = preset.PaletteThemeFile;
         if (persist) {
             try {
                 _shellPreferences = AppShellPreferencesStore.Sanitize(_shellPreferences with {
-                    ThemeFile = themeFile
+                    ThemePresetId = preset.Id,
+                    ThemeFile = preset.PaletteThemeFile
                 });
                 AppShellPreferencesStore.Save(_shellPreferences);
             } catch (Exception ex) {
-                AppLog.Warn("theme", $"failed to persist theme: {ex.Message}");
+                AppLog.Warn("theme", $"failed to persist theme preset: {ex.Message}");
             }
         }
 
         UpdateThemeButtonStates();
-        _settingsWindow?.ApplyThemeSelection(themeFile);
+        _settingsWindow?.ApplyThemeSelection(preset.Id);
         RefreshDiagnosticsSummary();
     }
 
@@ -1210,6 +1217,7 @@ public partial class MainWindow : Window {
 
     void ApplySavedTheme() {
         var savedTheme = _shellPreferences.ThemeFile;
+        var savedPresetId = _shellPreferences.ThemePresetId;
         if (_vault.IsOpen &&
             (string.IsNullOrWhiteSpace(savedTheme) ||
              string.Equals(savedTheme, DefaultThemeFile, StringComparison.Ordinal))) {
@@ -1219,7 +1227,10 @@ public partial class MainWindow : Window {
             }
         }
 
-        ApplyTheme(savedTheme, persist: !string.Equals(savedTheme, _shellPreferences.ThemeFile, StringComparison.Ordinal));
+        var resolvedPreset = ThemePresetCatalog.Resolve(savedPresetId, savedTheme);
+        ApplyThemePreset(resolvedPreset.Id, persist:
+            !string.Equals(resolvedPreset.Id, _shellPreferences.ThemePresetId, StringComparison.Ordinal) ||
+            !string.Equals(resolvedPreset.PaletteThemeFile, _shellPreferences.ThemeFile, StringComparison.Ordinal));
     }
 
     void UpdateThemeButtonStates() {
@@ -1229,7 +1240,29 @@ public partial class MainWindow : Window {
             button.BorderThickness = isActive ? new Thickness(2) : new Thickness(1);
             button.Foreground = isActive ? (Brush)FindResource("White") : (Brush)FindResource("Transparent");
         }
-        _settingsWindow?.ApplyThemeSelection(_activeThemeFile);
+        _settingsWindow?.ApplyThemeSelection(_activeThemePresetId);
+    }
+
+    void HandleThemePresetApplied(ThemePresetDefinition preset) =>
+        Dispatcher.Invoke(() => ApplyThemePresetVisuals(preset));
+
+    void ApplyThemePresetVisuals(ThemePresetDefinition preset) {
+        ShellWallpaperImage.Source = UiThemeManager.LoadImageSource(preset.ShellBackgroundAssetPath);
+        ShellWallpaperImage.Visibility = ShellWallpaperImage.Source == null ? Visibility.Collapsed : Visibility.Visible;
+        ShellWallpaperImage.Opacity = preset.ShellWallpaperOpacity;
+
+        ShellWallpaperTint.Background = new SolidColorBrush(MediaColor.FromArgb(
+            (byte)Math.Clamp((int)Math.Round(preset.ShellOverlayOpacity * 255), 0, 255),
+            preset.BackdropColor.R,
+            preset.BackdropColor.G,
+            preset.BackdropColor.B));
+        ShellWallpaperTint.Opacity = preset.ShellOverlayOpacity > 0 ? 1d : 0d;
+
+        ChatMotifImage.Source = UiThemeManager.LoadImageSource(preset.ChatMotifAssetPath);
+        ChatMotifImage.Visibility = ChatMotifImage.Source == null ? Visibility.Collapsed : Visibility.Visible;
+        ChatMotifImage.Opacity = preset.ChatMotifOpacity;
+        if (preset.ChatMotifMaxWidth > 0) ChatMotifImage.Width = preset.ChatMotifMaxWidth;
+        if (preset.ChatMotifMaxHeight > 0) ChatMotifImage.Height = preset.ChatMotifMaxHeight;
     }
 
     void UpdateConversationSnapshot(ConvViewModel conv, Message? latestMessage = null, string? senderLabel = null) {
@@ -3531,6 +3564,7 @@ public partial class MainWindow : Window {
 
     protected override void OnClosed(EventArgs e) {
         _uiLifetimeCts.Cancel();
+        UiThemeManager.PresetApplied -= HandleThemePresetApplied;
         _outboxTimer?.Stop();
         _myIdResetTimer?.Stop();
         if (_notifyIcon != null) {

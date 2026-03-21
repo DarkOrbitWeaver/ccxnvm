@@ -1,17 +1,24 @@
 using System.Globalization;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
 using Button = System.Windows.Controls.Button;
+using MediaColor = System.Windows.Media.Color;
+using Image = System.Windows.Controls.Image;
 
 namespace Cipher;
 
 public partial class SettingsWindow : Window {
     bool _applyingState;
+    readonly Dictionary<string, Button> _themePresetButtons = [];
 
     public SettingsWindow() {
         InitializeComponent();
+        BuildThemePresetButtons();
+        UiThemeManager.PresetApplied += HandlePresetApplied;
+        Closed += (_, _) => UiThemeManager.PresetApplied -= HandlePresetApplied;
     }
 
     public event Action<string>? ThemeRequested;
@@ -33,17 +40,20 @@ public partial class SettingsWindow : Window {
     public void SetDiagnosticsText(string text) =>
         SettingsDiagnosticsText.Text = text;
 
-    public void ApplyThemeSelection(string themeFile) {
-        foreach (var button in ThemeButtons()) {
-            var isActive = string.Equals(button.Tag as string, themeFile, StringComparison.Ordinal);
-            button.Content = isActive ? "\u2713" : "";
+    public void ApplyThemeSelection(string presetId) {
+        var preset = ThemePresetCatalog.GetById(presetId);
+
+        foreach (var (id, button) in _themePresetButtons) {
+            var isActive = string.Equals(id, preset.Id, StringComparison.Ordinal);
             button.BorderThickness = isActive ? new Thickness(2) : new Thickness(1);
-            button.Foreground = isActive
+            button.BorderBrush = isActive
                 ? (Brush)FindResource("White")
-                : Brushes.Transparent;
+                : (Brush)FindResource("GlassBorder");
+            button.Opacity = isActive ? 1d : 0.96d;
         }
 
-        ThemeHintText.Text = $"Current theme: {ThemeLabel(themeFile)}. Applies and saves instantly on this device.";
+        ThemeHintText.Text = $"Current preset: {preset.DisplayName} ({preset.KindLabel}). Applies and saves instantly on this device.";
+        ApplyThemeShellVisuals(preset);
     }
 
     public void ApplyChatFontSizeSelection(double fontSize) {
@@ -93,9 +103,116 @@ public partial class SettingsWindow : Window {
         }
     }
 
+    void BuildThemePresetButtons() {
+        ThemePresetPanel.Children.Clear();
+        _themePresetButtons.Clear();
+
+        foreach (var preset in ThemePresetCatalog.All) {
+            var button = new Button {
+                Tag = preset.Id,
+                Width = 156,
+                Height = 136,
+                Margin = new Thickness(0, 0, 14, 14),
+                Padding = new Thickness(0),
+                Style = (Style)FindResource("TermBtn"),
+                Background = new SolidColorBrush(MediaColor.FromArgb(0x28, preset.BackdropColor.R, preset.BackdropColor.G, preset.BackdropColor.B)),
+                BorderBrush = (Brush)FindResource("GlassBorder"),
+                Content = BuildPresetCardContent(preset),
+                ToolTip = $"{preset.DisplayName} ({preset.KindLabel})",
+                HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
+                VerticalContentAlignment = System.Windows.VerticalAlignment.Stretch
+            };
+            button.Click += ThemeButton_Click;
+            ThemePresetPanel.Children.Add(button);
+            _themePresetButtons[preset.Id] = button;
+        }
+    }
+
+    UIElement BuildPresetCardContent(ThemePresetDefinition preset) {
+        var root = new Border {
+            CornerRadius = new CornerRadius(14),
+            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(MediaColor.FromArgb(0x44, preset.AccentColor.R, preset.AccentColor.G, preset.AccentColor.B)),
+            Background = new SolidColorBrush(MediaColor.FromArgb(0x35, preset.BackdropColor.R, preset.BackdropColor.G, preset.BackdropColor.B))
+        };
+
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(78) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var previewHost = new Border {
+            Margin = new Thickness(8, 8, 8, 0),
+            CornerRadius = new CornerRadius(10),
+            Background = new SolidColorBrush(MediaColor.FromArgb(0x52, preset.BackdropColor.R, preset.BackdropColor.G, preset.BackdropColor.B)),
+            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(MediaColor.FromArgb(0x40, preset.AccentColor.R, preset.AccentColor.G, preset.AccentColor.B))
+        };
+
+        if (UiThemeManager.LoadImageSource(preset.PreviewAssetPath) is ImageSource previewSource) {
+            previewHost.Child = new Grid {
+                Children = {
+                    new Image {
+                        Source = previewSource,
+                        Stretch = Stretch.UniformToFill
+                    },
+                    new Border {
+                        Background = new SolidColorBrush(MediaColor.FromArgb(0x30, preset.BackdropColor.R, preset.BackdropColor.G, preset.BackdropColor.B))
+                    }
+                }
+            };
+        } else {
+            previewHost.Child = new Border {
+                Background = new LinearGradientBrush(
+                    MediaColor.FromArgb(0x70, preset.AccentColor.R, preset.AccentColor.G, preset.AccentColor.B),
+                    MediaColor.FromArgb(0x90, preset.BackdropColor.R, preset.BackdropColor.G, preset.BackdropColor.B),
+                    45)
+            };
+        }
+
+        Grid.SetRow(previewHost, 0);
+        grid.Children.Add(previewHost);
+
+        var labels = new StackPanel {
+            Margin = new Thickness(10, 10, 10, 10)
+        };
+        labels.Children.Add(new TextBlock {
+            Text = preset.DisplayName,
+            Foreground = (Brush)FindResource("White"),
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold
+        });
+        labels.Children.Add(new TextBlock {
+            Text = preset.KindLabel,
+            Foreground = (Brush)FindResource("Muted"),
+            FontSize = 10,
+            Margin = new Thickness(0, 3, 0, 0)
+        });
+        Grid.SetRow(labels, 1);
+        grid.Children.Add(labels);
+
+        root.Child = grid;
+        return root;
+    }
+
+    void ApplyThemeShellVisuals(ThemePresetDefinition preset) {
+        ShellWallpaperImage.Source = UiThemeManager.LoadImageSource(preset.ShellBackgroundAssetPath);
+        ShellWallpaperImage.Visibility = ShellWallpaperImage.Source == null ? Visibility.Collapsed : Visibility.Visible;
+        ShellWallpaperImage.Opacity = preset.ShellWallpaperOpacity;
+
+        ShellWallpaperTint.Background = new SolidColorBrush(MediaColor.FromArgb(
+            (byte)Math.Clamp((int)Math.Round(preset.ShellOverlayOpacity * 255), 0, 255),
+            preset.BackdropColor.R,
+            preset.BackdropColor.G,
+            preset.BackdropColor.B));
+        ShellWallpaperTint.Opacity = preset.ShellOverlayOpacity > 0 ? 1d : 0d;
+    }
+
+    void HandlePresetApplied(ThemePresetDefinition preset) =>
+        Dispatcher.Invoke(() => ApplyThemeShellVisuals(preset));
+
     void ThemeButton_Click(object sender, RoutedEventArgs e) {
-        if (sender is Button { Tag: string themeFile }) {
-            ThemeRequested?.Invoke(themeFile);
+        if (sender is Button { Tag: string presetId }) {
+            ThemeRequested?.Invoke(presetId);
         }
     }
 
@@ -148,9 +265,6 @@ public partial class SettingsWindow : Window {
     void BtnClose_Click(object sender, RoutedEventArgs e) =>
         Close();
 
-    IEnumerable<Button> ThemeButtons() =>
-        [BtnThemeTeal, BtnThemeViolet, BtnThemeBlue, BtnThemeAmber, BtnThemeRose];
-
     IEnumerable<(double size, Button button)> ChatFontButtons() =>
         [(15d, BtnChatFontSize15), (17d, BtnChatFontSize17), (19d, BtnChatFontSize19)];
 
@@ -158,14 +272,6 @@ public partial class SettingsWindow : Window {
         [(0, BtnStartupDelay0), (15, BtnStartupDelay15), (30, BtnStartupDelay30), (60, BtnStartupDelay60)];
 
     static string DelayLabel(int seconds) => seconds <= 0 ? "Off" : $"{seconds} sec";
-
-    static string ThemeLabel(string themeFile) => themeFile switch {
-        "Theme.Violet.xaml" => "Violet",
-        "Theme.Blue.xaml" => "Blue",
-        "Theme.Amber.xaml" => "Amber",
-        "Theme.Rose.xaml" => "Rose",
-        _ => "Teal"
-    };
 
     static double NormalizeChatFontSize(double fontSize) {
         if (fontSize <= 15.5) return 15d;

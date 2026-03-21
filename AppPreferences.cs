@@ -9,6 +9,7 @@ public sealed record AppShellPreferences(
     bool StartWithWindows = true,
     bool StartHiddenOnStartup = true,
     int StartupDelaySeconds = 60,
+    string ThemePresetId = ThemePresetCatalog.DefaultPresetId,
     string ThemeFile = "Theme.Teal.xaml",
     double ChatFontSize = 17d
 );
@@ -63,9 +64,8 @@ public static class AppShellPreferencesStore {
         else if (delay is > 30 and <= 60) delay = 60;
         else if (delay > 60) delay = 60;
 
-        var themeFile = string.IsNullOrWhiteSpace(preferences.ThemeFile)
-            ? "Theme.Teal.xaml"
-            : preferences.ThemeFile;
+        var resolvedPreset = ThemePresetCatalog.Resolve(preferences.ThemePresetId, preferences.ThemeFile);
+        var themeFile = resolvedPreset.PaletteThemeFile;
 
         var chatFontSize = preferences.ChatFontSize;
         if (chatFontSize <= 15.5) chatFontSize = 15d;
@@ -74,6 +74,7 @@ public static class AppShellPreferencesStore {
 
         return preferences with {
             StartupDelaySeconds = delay,
+            ThemePresetId = resolvedPreset.Id,
             ThemeFile = themeFile,
             ChatFontSize = chatFontSize
         };

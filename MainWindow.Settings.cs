@@ -11,7 +11,7 @@ public partial class MainWindow {
                 Owner = this
             };
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
-            _settingsWindow.ThemeRequested += themeFile => ApplyTheme(themeFile);
+            _settingsWindow.ThemeRequested += presetId => ApplyThemePreset(presetId);
             _settingsWindow.ChatFontSizeRequested += fontSize => ApplyChatFontSize(fontSize);
             _settingsWindow.CloseToTrayChanged += enabled => UpdateCloseToTrayPreference(enabled);
             _settingsWindow.StartWithWindowsChanged += enabled => UpdateStartWithWindowsPreference(enabled);
@@ -46,7 +46,7 @@ public partial class MainWindow {
 
         _settingsWindow.SetVersionText($"{AppBranding.ProductName} v{AppInfo.DisplayVersion}");
         _settingsWindow.SetDiagnosticsText(BuildDiagnosticsSummaryText());
-        _settingsWindow.ApplyThemeSelection(_activeThemeFile);
+        _settingsWindow.ApplyThemeSelection(_activeThemePresetId);
         _settingsWindow.ApplyChatFontSizeSelection(GetCurrentChatFontSize());
         _settingsWindow.ApplyShellPreferences(_shellPreferences);
         _settingsWindow.ApplyUpdateSnapshot(_updater.Snapshot, _updater.CanCheck, _updater.CanRestartToApply);

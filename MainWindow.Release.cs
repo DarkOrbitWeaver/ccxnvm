@@ -107,8 +107,11 @@ public partial class MainWindow {
         SettingsOverlay.Visibility = Visibility.Collapsed;
 
     void ThemeButton_Click(object s, RoutedEventArgs e) {
-        if (s is not System.Windows.Controls.Button { Tag: string themeFile }) return;
-        ApplyTheme(themeFile);
+        if (s is not System.Windows.Controls.Button { Tag: string tag }) return;
+        var preset = tag.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase)
+            ? ThemePresetCatalog.GetByLegacyThemeFile(tag)
+            : ThemePresetCatalog.GetById(tag);
+        ApplyThemePreset(preset.Id);
     }
 
     void BtnCheckUpdates_Click(object s, RoutedEventArgs e) =>

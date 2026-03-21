@@ -35,6 +35,12 @@
     <Resource Include="Assets\OpenMoji\*.png" />
   </ItemGroup>
   <ItemGroup>
+    <None Remove="Assets\backgrounds\*.jpg" />
+    <None Remove="Assets\backgrounds\*.png" />
+    <Resource Include="Assets\backgrounds\*.jpg" />
+    <Resource Include="Assets\backgrounds\*.png" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Real-time messaging -->
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="9.0.0" />
     <!-- Encrypted local vault -->

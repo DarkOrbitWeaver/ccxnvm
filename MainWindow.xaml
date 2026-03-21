@@ -139,7 +139,16 @@
         </DataTemplate>
     </Window.Resources>
 
-    <Grid Margin="18">
+    <Grid>
+        <Grid IsHitTestVisible="False">
+            <Image x:Name="ShellWallpaperImage"
+                   Stretch="UniformToFill"
+                   Opacity="0" />
+            <Border x:Name="ShellWallpaperTint"
+                    Background="#000000"
+                    Opacity="0" />
+        </Grid>
+        <Grid Margin="18">
         <Grid x:Name="AuthPanel" Panel.ZIndex="10">
             <Grid.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -493,6 +502,17 @@
                     </Grid.RowDefinitions>
                     <Border Grid.Row="0" CornerRadius="18" Background="{StaticResource GlassPanel}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" Padding="12">
                         <Grid>
+                            <Image x:Name="ChatMotifImage"
+                                   Panel.ZIndex="1"
+                                   Width="440"
+                                   Height="440"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Bottom"
+                                   Margin="0,0,24,20"
+                                   Stretch="Uniform"
+                                   Opacity="0"
+                                   Visibility="Collapsed"
+                                   IsHitTestVisible="False" />
                             <Border x:Name="ConversationActionsBar"
                                     Panel.ZIndex="6"
                                     Margin="0,8,8,0"
@@ -718,6 +738,7 @@
                     </Border>
                 </Grid>
             </Grid>
+        </Grid>
         </Grid>
 
         <Grid x:Name="AddOverlay" Visibility="Collapsed" Panel.ZIndex="20" Background="#B3000000">
