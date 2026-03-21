@@ -233,7 +233,7 @@
     </Style>
 
     <Style TargetType="TextBox" x:Key="TermInput">
-        <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
+        <Setter Property="Background" Value="{DynamicResource GlassInputBg}" />
         <Setter Property="Foreground" Value="{StaticResource White}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
         <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}" />
@@ -266,7 +266,7 @@
                         <Trigger Property="IsKeyboardFocused" Value="True">
                             <Setter TargetName="focusRing" Property="BorderBrush" Value="{DynamicResource InputFocusRing}" />
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
-                            <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource GlassInputFocusBg}" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="focusRing" Property="Opacity" Value="0.55" />
@@ -279,7 +279,7 @@
     </Style>
 
     <Style TargetType="PasswordBox" x:Key="TermPasswordInput">
-        <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
+        <Setter Property="Background" Value="{DynamicResource GlassInputBg}" />
         <Setter Property="Foreground" Value="{StaticResource White}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
         <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}" />
@@ -311,7 +311,7 @@
                         <Trigger Property="IsKeyboardFocused" Value="True">
                             <Setter TargetName="focusRing" Property="BorderBrush" Value="{DynamicResource InputFocusRing}" />
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
-                            <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource GlassInputFocusBg}" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="focusRing" Property="Opacity" Value="0.55" />
@@ -324,7 +324,7 @@
     </Style>
 
     <Style TargetType="RichTextBox" x:Key="TermRichInput">
-        <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
+        <Setter Property="Background" Value="{DynamicResource GlassInputBg}" />
         <Setter Property="Foreground" Value="{StaticResource White}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
         <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}" />
@@ -362,7 +362,7 @@
                         <Trigger Property="IsKeyboardFocusWithin" Value="True">
                             <Setter TargetName="focusRing" Property="BorderBrush" Value="{DynamicResource InputFocusRing}" />
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
-                            <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource GlassInputFocusBg}" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="focusRing" Property="Opacity" Value="0.55" />

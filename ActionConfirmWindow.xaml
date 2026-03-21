@@ -15,7 +15,7 @@
     <Grid Margin="18">
         <Border Padding="20"
                 CornerRadius="22"
-                Background="{StaticResource GlassPanel}"
+                Background="{DynamicResource GlassPanel}"
                 BorderBrush="{DynamicResource GlassBorder}"
                 BorderThickness="1">
             <Grid>

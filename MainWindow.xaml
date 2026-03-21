@@ -8,7 +8,7 @@
         MinWidth="900"
         MinHeight="620"
         Icon="Assets/48x48.ico"
-        Background="{StaticResource AppBackgroundBrush}"
+        Background="{DynamicResource AppBackgroundBrush}"
         FontFamily="{StaticResource UiFont}"
         Foreground="{StaticResource White}"
         WindowStartupLocation="CenterScreen"
@@ -65,7 +65,7 @@
                         MaxWidth="{Binding BubbleMaxWidth}">
                     <Border.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
-                                     Background="{StaticResource GlassOverlay}"
+                                     Background="{DynamicResource GlassOverlay}"
                                      BorderBrush="{DynamicResource GlassBorder}"
                                      BorderThickness="1">
                             <MenuItem Header="Copy message"
@@ -166,7 +166,7 @@
                             Padding="36"
                             Margin="0,0,0,12"
                             CornerRadius="24"
-                            Background="{StaticResource GlassOverlay}"
+                            Background="{DynamicResource GlassOverlay}"
                             BorderBrush="{DynamicResource GlassBorder}"
                             BorderThickness="1"
                             HorizontalAlignment="Center"
@@ -278,7 +278,7 @@
             <Border Grid.Row="0"
                     Padding="14,12"
                     CornerRadius="18"
-                    Background="{StaticResource GlassPanel}"
+                    Background="{DynamicResource GlassPanel}"
                     BorderBrush="{DynamicResource GlassBorder}"
                     BorderThickness="1"
                     Margin="0,0,0,14">
@@ -322,7 +322,7 @@
                         <Border Width="320"
                                 Padding="16"
                                 CornerRadius="16"
-                                Background="{StaticResource GlassOverlay}"
+                                Background="{DynamicResource GlassOverlay}"
                                 BorderBrush="{DynamicResource GlassBorder}"
                                 BorderThickness="1">
                             <StackPanel>
@@ -377,7 +377,7 @@
 
                 <Border Grid.Column="0"
                         CornerRadius="18"
-                        Background="{StaticResource GlassPanel}"
+                        Background="{DynamicResource GlassPanel}"
                         BorderBrush="{DynamicResource GlassBorder}"
                         BorderThickness="1"
                         Padding="12">
@@ -500,7 +500,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <Border Grid.Row="0" CornerRadius="18" Background="{StaticResource GlassPanel}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" Padding="12">
+                    <Border Grid.Row="0" CornerRadius="18" Background="{DynamicResource GlassPanel}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" Padding="12">
                         <Grid>
                             <Image x:Name="ChatMotifImage"
                                    Panel.ZIndex="1"
@@ -518,7 +518,7 @@
                                     Margin="0,8,8,0"
                                     Padding="8,6"
                                     CornerRadius="12"
-                                    Background="{StaticResource GlassOverlay}"
+                                            Background="{DynamicResource GlassOverlay}"
                                     BorderBrush="{DynamicResource GlassBorder}"
                                     BorderThickness="1"
                                     HorizontalAlignment="Right"
@@ -614,7 +614,7 @@
                                     Panel.ZIndex="5"
                                     Padding="10,8"
                                     CornerRadius="12"
-                                    Background="{StaticResource GlassOverlay}"
+                                    Background="{DynamicResource GlassOverlay}"
                                     BorderBrush="{DynamicResource GlassBorder}"
                                     BorderThickness="1"
                                     HorizontalAlignment="Center"
@@ -698,7 +698,7 @@
                         </Grid>
                     </Border>
                     <TextBlock x:Name="TypingIndicator" Grid.Row="1" Margin="12,8,12,0" Visibility="Collapsed" FontSize="11" Foreground="{StaticResource Muted}" />
-                    <Border x:Name="ComposerPanel" Grid.Row="2" Margin="0,12,0,0" Padding="12" CornerRadius="18" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1">
+                    <Border x:Name="ComposerPanel" Grid.Row="2" Margin="0,12,0,0" Padding="12" CornerRadius="18" Background="{DynamicResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -725,7 +725,7 @@
                             Height="286"
                             Padding="10"
                             CornerRadius="16"
-                            Background="{StaticResource GlassOverlay}"
+                            Background="{DynamicResource GlassOverlay}"
                             BorderBrush="{DynamicResource GlassBorder}"
                             BorderThickness="1"
                             HorizontalAlignment="Right"
@@ -742,7 +742,7 @@
         </Grid>
 
         <Grid x:Name="AddOverlay" Visibility="Collapsed" Panel.ZIndex="20" Background="{DynamicResource OverlayBg}">
-            <Border Width="460" MaxHeight="560" Padding="24" CornerRadius="22" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <Border Width="460" MaxHeight="560" Padding="24" CornerRadius="22" Background="{DynamicResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <StackPanel>
                     <TextBlock Text="结 Add contact or create a group" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource White}" Margin="0,0,0,18" />
                     <Grid Margin="0,0,0,14">
@@ -795,7 +795,7 @@
         </Grid>
 
         <Grid x:Name="InviteOverlay" Visibility="Collapsed" Panel.ZIndex="21" Background="{DynamicResource OverlayBg}">
-            <Border Width="500" MaxHeight="620" Padding="24" CornerRadius="22" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <Border Width="500" MaxHeight="620" Padding="24" CornerRadius="22" Background="{DynamicResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -914,7 +914,7 @@
         </Grid>
 
         <Grid x:Name="SettingsOverlay" Visibility="Collapsed" Panel.ZIndex="25" Background="{DynamicResource OverlayBg}">
-            <Border Width="580" MaxHeight="680" Padding="0" CornerRadius="22" Background="{StaticResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <Border Width="580" MaxHeight="680" Padding="0" CornerRadius="22" Background="{DynamicResource GlassOverlay}" BorderBrush="{DynamicResource GlassBorder}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel Margin="24">
                     <TextBlock Text="系 System" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource White}" Margin="0,0,0,18" />

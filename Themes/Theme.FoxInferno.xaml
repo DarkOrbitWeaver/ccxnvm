@@ -17,9 +17,9 @@
     <Color x:Key="GlassInputFocusBgColor">#C2140A0A</Color>
     <Color x:Key="BubbleMineColor">#C41A0505</Color>
     <Color x:Key="BubbleTheirsColor">#B5080808</Color>
-    <Color x:Key="AppBackgroundStartColor">#020201</Color>
-    <Color x:Key="AppBackgroundMidColor">#120505</Color>
-    <Color x:Key="AppBackgroundEndColor">#020201</Color>
+    <Color x:Key="AppBackgroundStartColor">#000000</Color>
+    <Color x:Key="AppBackgroundMidColor">#000000</Color>
+    <Color x:Key="AppBackgroundEndColor">#000000</Color>
 
     <!-- Theme-aware UI element colors -->
     <Color x:Key="TermBtnBgColor">#50090909</Color>

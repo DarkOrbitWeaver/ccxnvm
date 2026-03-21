@@ -117,7 +117,7 @@ public static class ThemePresetCatalog {
             "Theme.FoxInferno.xaml",
             "Wallpaper",
             "#D60604",
-            "#020201",
+            "#000000",
             "pack://application:,,,/Assets/backgrounds/fox.jpg",
             null,
             "pack://application:,,,/Assets/backgrounds/fox-motif-1024.png",

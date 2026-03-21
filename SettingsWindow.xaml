@@ -6,7 +6,7 @@
         Height="620"
         MinWidth="620"
         MinHeight="520"
-        Background="{StaticResource AppBackgroundBrush}"
+        Background="{DynamicResource AppBackgroundBrush}"
         FontFamily="{StaticResource UiFont}"
         Foreground="{StaticResource White}"
         WindowStartupLocation="CenterOwner"
@@ -23,7 +23,7 @@
         <Grid Margin="18">
         <Border Padding="18"
                 CornerRadius="22"
-                Background="{StaticResource GlassPanel}"
+                Background="{DynamicResource GlassPanel}"
                 BorderBrush="{DynamicResource GlassBorder}"
                 BorderThickness="1">
             <Grid>

@@ -112,25 +112,22 @@ public static class UiThemeManager {
             }
         }
 
-        if (targetResources.Contains("AppBackgroundBrush") &&
-            targetResources["AppBackgroundBrush"] is LinearGradientBrush background &&
-            !background.IsFrozen &&
-            background.GradientStops.Count >= 3) {
-            if (TryGetColor(themeResources, "AppBackgroundStartColor", out var startColor)) {
-                targetResources["AppBackgroundStartColor"] = startColor;
-                background.GradientStops[0].Color = startColor;
-            }
+        TryGetColor(themeResources, "AppBackgroundStartColor", out var startColor);
+        TryGetColor(themeResources, "AppBackgroundMidColor", out var midColor);
+        TryGetColor(themeResources, "AppBackgroundEndColor", out var endColor);
 
-            if (TryGetColor(themeResources, "AppBackgroundMidColor", out var midColor)) {
-                targetResources["AppBackgroundMidColor"] = midColor;
-                background.GradientStops[1].Color = midColor;
-            }
+        targetResources["AppBackgroundStartColor"] = startColor;
+        targetResources["AppBackgroundMidColor"] = midColor;
+        targetResources["AppBackgroundEndColor"] = endColor;
 
-            if (TryGetColor(themeResources, "AppBackgroundEndColor", out var endColor)) {
-                targetResources["AppBackgroundEndColor"] = endColor;
-                background.GradientStops[2].Color = endColor;
-            }
-        }
+        var newBg = new LinearGradientBrush {
+            StartPoint = new System.Windows.Point(0, 0),
+            EndPoint = new System.Windows.Point(1, 1)
+        };
+        newBg.GradientStops.Add(new GradientStop(startColor, 0));
+        newBg.GradientStops.Add(new GradientStop(midColor, 0.46));
+        newBg.GradientStops.Add(new GradientStop(endColor, 1));
+        targetResources["AppBackgroundBrush"] = newBg;
     }
 
     static bool TryGetColor(ResourceDictionary resources, string key, out Color color) {
