@@ -45,10 +45,10 @@ public partial class SettingsWindow : Window {
 
         foreach (var (id, button) in _themePresetButtons) {
             var isActive = string.Equals(id, preset.Id, StringComparison.Ordinal);
-            button.BorderThickness = isActive ? new Thickness(2) : new Thickness(1);
+            button.BorderThickness = isActive ? new Thickness(2) : new Thickness(0);
             button.BorderBrush = isActive
                 ? (Brush)FindResource("White")
-                : (Brush)FindResource("GlassBorder");
+                : Brushes.Transparent;
             button.Opacity = isActive ? 1d : 0.96d;
         }
 
@@ -130,6 +130,8 @@ public partial class SettingsWindow : Window {
 
     UIElement BuildPresetCardContent(ThemePresetDefinition preset) {
         var root = new Border {
+            Width = 152,
+            Height = 132,
             CornerRadius = new CornerRadius(14),
             BorderThickness = new Thickness(1),
             BorderBrush = new SolidColorBrush(MediaColor.FromArgb(0x44, preset.AccentColor.R, preset.AccentColor.G, preset.AccentColor.B)),

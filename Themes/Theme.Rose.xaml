@@ -20,4 +20,22 @@
     <Color x:Key="AppBackgroundStartColor">#140B11</Color>
     <Color x:Key="AppBackgroundMidColor">#381225</Color>
     <Color x:Key="AppBackgroundEndColor">#140A10</Color>
+
+    <!-- Theme-aware UI element colors -->
+    <Color x:Key="TermBtnBgColor">#50162840</Color>
+    <Color x:Key="TermBtnHoverBgColor">#641D324C</Color>
+    <Color x:Key="TermBtnHoverBorderColor">#55FF6B96</Color>
+    <Color x:Key="GroupBtnBgColor">#1AFF6B96</Color>
+    <Color x:Key="GroupBtnHoverBgColor">#26FF6B96</Color>
+    <Color x:Key="GroupBtnBorderColor">#4DFF6B96</Color>
+    <Color x:Key="GroupBtnHoverBorderColor">#6EFFB0C8</Color>
+    <Color x:Key="InputFocusRingColor">#33FF6B96</Color>
+    <Color x:Key="ScrollBarTrackBgColor">#22000000</Color>
+    <Color x:Key="BadgeBgColor">#20303F</Color>
+    <Color x:Key="UnreadSeparatorBgColor">#14000000</Color>
+    <Color x:Key="UnreadCountBgColor">#3A2A17</Color>
+    <Color x:Key="OverlayBgColor">#B3000000</Color>
+    <Color x:Key="PanelBgColor">#1A2432</Color>
+    <Color x:Key="ContainerBgColor">#14000000</Color>
+    <Color x:Key="ListBoxHoverBgColor">#132332</Color>
 </ResourceDictionary>

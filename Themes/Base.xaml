@@ -33,6 +33,24 @@
     <Color x:Key="MessageTextColor">#D8E8F4</Color>
     <Color x:Key="TransparentColor">#00000000</Color>
 
+    <!-- Theme-aware UI element colors -->
+    <Color x:Key="TermBtnBgColor">#50162840</Color>
+    <Color x:Key="TermBtnHoverBgColor">#641D324C</Color>
+    <Color x:Key="TermBtnHoverBorderColor">#55708CAD</Color>
+    <Color x:Key="GroupBtnBgColor">#1AF2B55B</Color>
+    <Color x:Key="GroupBtnHoverBgColor">#26F2B55B</Color>
+    <Color x:Key="GroupBtnBorderColor">#4DF2B55B</Color>
+    <Color x:Key="GroupBtnHoverBorderColor">#6EF6C57A</Color>
+    <Color x:Key="InputFocusRingColor">#3358D7B6</Color>
+    <Color x:Key="ScrollBarTrackBgColor">#22000000</Color>
+    <Color x:Key="BadgeBgColor">#20303F</Color>
+    <Color x:Key="UnreadSeparatorBgColor">#14000000</Color>
+    <Color x:Key="UnreadCountBgColor">#3A2A17</Color>
+    <Color x:Key="OverlayBgColor">#B3000000</Color>
+    <Color x:Key="PanelBgColor">#1A2432</Color>
+    <Color x:Key="ContainerBgColor">#14000000</Color>
+    <Color x:Key="ListBoxHoverBgColor">#132332</Color>
+
     <SolidColorBrush x:Key="Bg" Color="{StaticResource BgColor}" />
     <SolidColorBrush x:Key="Panel" Color="{StaticResource PanelColor}" />
     <SolidColorBrush x:Key="Surface" Color="{StaticResource SurfaceColor}" />
@@ -72,6 +90,24 @@
     <SolidColorBrush x:Key="SeenChipBg" Color="{StaticResource SeenChipBgColor}" />
     <SolidColorBrush x:Key="MessageText" Color="{StaticResource MessageTextColor}" />
     <SolidColorBrush x:Key="Transparent" Color="{StaticResource TransparentColor}" />
+
+    <!-- Theme-aware UI element brushes -->
+    <SolidColorBrush x:Key="TermBtnBg" Color="{DynamicResource TermBtnBgColor}" />
+    <SolidColorBrush x:Key="TermBtnHoverBg" Color="{DynamicResource TermBtnHoverBgColor}" />
+    <SolidColorBrush x:Key="TermBtnHoverBorder" Color="{DynamicResource TermBtnHoverBorderColor}" />
+    <SolidColorBrush x:Key="GroupBtnBg" Color="{DynamicResource GroupBtnBgColor}" />
+    <SolidColorBrush x:Key="GroupBtnHoverBg" Color="{DynamicResource GroupBtnHoverBgColor}" />
+    <SolidColorBrush x:Key="GroupBtnBorder" Color="{DynamicResource GroupBtnBorderColor}" />
+    <SolidColorBrush x:Key="GroupBtnHoverBorder" Color="{DynamicResource GroupBtnHoverBorderColor}" />
+    <SolidColorBrush x:Key="InputFocusRing" Color="{DynamicResource InputFocusRingColor}" />
+    <SolidColorBrush x:Key="ScrollBarTrackBg" Color="{DynamicResource ScrollBarTrackBgColor}" />
+    <SolidColorBrush x:Key="BadgeBg" Color="{DynamicResource BadgeBgColor}" />
+    <SolidColorBrush x:Key="UnreadSeparatorBg" Color="{DynamicResource UnreadSeparatorBgColor}" />
+    <SolidColorBrush x:Key="UnreadCountBg" Color="{DynamicResource UnreadCountBgColor}" />
+    <SolidColorBrush x:Key="OverlayBg" Color="{DynamicResource OverlayBgColor}" />
+    <SolidColorBrush x:Key="PanelBg" Color="{DynamicResource PanelBgColor}" />
+    <SolidColorBrush x:Key="ContainerBg" Color="{DynamicResource ContainerBgColor}" />
+    <SolidColorBrush x:Key="ListBoxHoverBg" Color="{DynamicResource ListBoxHoverBgColor}" />
 
     <LinearGradientBrush x:Key="AppBackgroundBrush" StartPoint="0,0" EndPoint="1,1">
         <GradientStop Color="{DynamicResource AppBackgroundStartColor}" Offset="0" />
@@ -133,7 +169,7 @@
         <Grid Width="{TemplateBinding Width}" Background="Transparent">
             <Border Margin="2,0"
                     CornerRadius="5"
-                    Background="#22000000"
+                    Background="{DynamicResource ScrollBarTrackBg}"
                     BorderBrush="{DynamicResource GlassBorder}"
                     BorderThickness="1" />
             <Track x:Name="PART_Track"
@@ -158,7 +194,7 @@
         <Grid Height="{TemplateBinding Height}" Background="Transparent">
             <Border Margin="0,2"
                     CornerRadius="5"
-                    Background="#22000000"
+                    Background="{DynamicResource ScrollBarTrackBg}"
                     BorderBrush="{DynamicResource GlassBorder}"
                     BorderThickness="1" />
             <Track x:Name="PART_Track"
@@ -200,7 +236,7 @@
         <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
         <Setter Property="Foreground" Value="{StaticResource White}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
-        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="14" />
@@ -228,7 +264,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsKeyboardFocused" Value="True">
-                            <Setter TargetName="focusRing" Property="BorderBrush" Value="#3358D7B6" />
+                            <Setter TargetName="focusRing" Property="BorderBrush" Value="{DynamicResource InputFocusRing}" />
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
                             <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
                         </Trigger>
@@ -246,7 +282,7 @@
         <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
         <Setter Property="Foreground" Value="{StaticResource White}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
-        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="14" />
@@ -273,7 +309,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsKeyboardFocused" Value="True">
-                            <Setter TargetName="focusRing" Property="BorderBrush" Value="#3358D7B6" />
+                            <Setter TargetName="focusRing" Property="BorderBrush" Value="{DynamicResource InputFocusRing}" />
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
                             <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
                         </Trigger>
@@ -291,7 +327,7 @@
         <Setter Property="Background" Value="{StaticResource GlassInputBg}" />
         <Setter Property="Foreground" Value="{StaticResource White}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TealAccent}" />
-        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="14" />
@@ -324,7 +360,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                            <Setter TargetName="focusRing" Property="BorderBrush" Value="#3358D7B6" />
+                            <Setter TargetName="focusRing" Property="BorderBrush" Value="{DynamicResource InputFocusRing}" />
                             <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource TealAccent}" />
                             <Setter TargetName="bd" Property="Background" Value="{StaticResource GlassInputFocusBg}" />
                         </Trigger>
@@ -405,13 +441,13 @@
     </Style>
 
     <Style TargetType="Button" x:Key="TermBtn" BasedOn="{StaticResource BaseGlassButton}">
-        <Setter Property="Background" Value="#50162840" />
+        <Setter Property="Background" Value="{DynamicResource TermBtnBg}" />
         <Setter Property="Foreground" Value="{StaticResource Muted}" />
-        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GlassBorder}" />
         <Style.Triggers>
             <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="#641D324C" />
-                <Setter Property="BorderBrush" Value="#55708CAD" />
+                <Setter Property="Background" Value="{DynamicResource TermBtnHoverBg}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource TermBtnHoverBorder}" />
                 <Setter Property="Foreground" Value="{StaticResource White}" />
             </Trigger>
         </Style.Triggers>
@@ -431,13 +467,13 @@
     </Style>
 
     <Style TargetType="Button" x:Key="GroupBtn" BasedOn="{StaticResource BaseGlassButton}">
-        <Setter Property="Background" Value="#1AF2B55B" />
-        <Setter Property="BorderBrush" Value="#4DF2B55B" />
+        <Setter Property="Background" Value="{DynamicResource GroupBtnBg}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource GroupBtnBorder}" />
         <Setter Property="Foreground" Value="{StaticResource Amber}" />
         <Style.Triggers>
             <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="#26F2B55B" />
-                <Setter Property="BorderBrush" Value="#6EF6C57A" />
+                <Setter Property="Background" Value="{DynamicResource GroupBtnHoverBg}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource GroupBtnHoverBorder}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -469,8 +505,6 @@
     </Style>
 
     <Style TargetType="Button" x:Key="ThemeSwatchBtn" BasedOn="{StaticResource BaseGlassButton}">
-        <Setter Property="Width" Value="36" />
-        <Setter Property="Height" Value="36" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="BorderBrush" Value="#30425570" />
         <Setter Property="Foreground" Value="{StaticResource White}" />

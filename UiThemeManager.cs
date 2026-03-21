@@ -25,7 +25,23 @@ public static class UiThemeManager {
         ("GlassInputBgColor", "GlassInputBg"),
         ("GlassInputFocusBgColor", "GlassInputFocusBg"),
         ("BubbleMineColor", "BubbleMine"),
-        ("BubbleTheirsColor", "BubbleTheirs")
+        ("BubbleTheirsColor", "BubbleTheirs"),
+        ("TermBtnBgColor", "TermBtnBg"),
+        ("TermBtnHoverBgColor", "TermBtnHoverBg"),
+        ("TermBtnHoverBorderColor", "TermBtnHoverBorder"),
+        ("GroupBtnBgColor", "GroupBtnBg"),
+        ("GroupBtnHoverBgColor", "GroupBtnHoverBg"),
+        ("GroupBtnBorderColor", "GroupBtnBorder"),
+        ("GroupBtnHoverBorderColor", "GroupBtnHoverBorder"),
+        ("InputFocusRingColor", "InputFocusRing"),
+        ("ScrollBarTrackBgColor", "ScrollBarTrackBg"),
+        ("BadgeBgColor", "BadgeBg"),
+        ("UnreadSeparatorBgColor", "UnreadSeparatorBg"),
+        ("UnreadCountBgColor", "UnreadCountBg"),
+        ("OverlayBgColor", "OverlayBg"),
+        ("PanelBgColor", "PanelBg"),
+        ("ContainerBgColor", "ContainerBg"),
+        ("ListBoxHoverBgColor", "ListBoxHoverBg")
     ];
 
     public static ThemePresetDefinition CurrentPreset { get; private set; } = ThemePresetCatalog.Default;
@@ -89,10 +105,10 @@ public static class UiThemeManager {
 
             targetResources[colorKey] = color;
 
-            if (targetResources.Contains(brushKey) &&
-                targetResources[brushKey] is SolidColorBrush brush &&
-                !brush.IsFrozen) {
-                brush.Color = color;
+            // Recreate the brush to ensure it picks up the new color
+            // This is more reliable than trying to modify an existing brush
+            if (targetResources.Contains(brushKey)) {
+                targetResources[brushKey] = new SolidColorBrush(color);
             }
         }
 
