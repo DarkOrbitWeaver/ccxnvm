@@ -1790,18 +1790,7 @@ public partial class MainWindow : Window {
         // Verify signature (server already checked, client double-checks)
         if (!Crypto.Verify(contact.SignPubKey, $"{payload}:{seq}", sig)) return;
 
-        // Get/derive shared secret
-        var convKey = GetOrDeriveConvKey(contact);
-        if (convKey == null) return;
-
-        var msgKey = _vault.ConsumeIncomingDmMessageKey(conv.Id, contact.UserId, seq, convKey);
-        if (msgKey == null) {
-            await _net.AckDmAsync(senderId, seq, conv.Id);
-            return;
-        }
-
-        var msg = Crypto.DecryptDmWithMessageKey(msgKey, senderId, payload);
-        Crypto.Wipe(msgKey);
+        var msg = Crypto.DecryptDmWithRecipientDh(_user!.DhPrivKey, senderId, payload);
         if (msg == null) return;
         if (!IsPayloadTimestampAcceptable(msg.Timestamp, ts)) {
             AppLog.Warn("recv", $"direct payload timestamp out of bounds sender={AppTelemetry.MaskUserId(senderId)} seq={seq} relay_ts={ts} payload_ts={msg.Timestamp}");
@@ -2205,14 +2194,6 @@ public partial class MainWindow : Window {
             AppLog.Warn("send", $"direct send blocked for {AppTelemetry.MaskUserId(contact.UserId)} pending_keys={contact.HasPendingKeyChange}");
             return;
         }
-        var convKey = GetOrDeriveConvKey(contact);
-        if (convKey == null) {
-            vm.Status = MessageStatus.Failed;
-            ApplyReceiptUi(vm);
-            AppLog.Warn("send", $"direct send failed to derive conversation key for {AppTelemetry.MaskUserId(contact.UserId)}");
-            return;
-        }
-
         if (!TryPrepareDirectEnvelope(contact, msg, out var payload, out var sig)) {
             vm.Status = MessageStatus.Failed;
             ApplyReceiptUi(vm);
@@ -2426,13 +2407,8 @@ public partial class MainWindow : Window {
         sig = "";
         if (_user == null) return false;
         var convId = contact.ConversationId ?? contact.UserId;
-        var shared = GetOrDeriveConvKey(contact);
-        if (shared == null) return false;
-        var prepared = _vault.AllocateOutgoingDmMessageKey(convId, shared);
-        if (prepared == null) return false;
-        message.SeqNum = prepared.Value.seq;
-        payload = Crypto.EncryptDmWithMessageKey(prepared.Value.messageKey, message);
-        Crypto.Wipe(prepared.Value.messageKey);
+        message.SeqNum = _vault.NextSeqNum(convId);
+        payload = Crypto.EncryptDmWithDhRatchet(contact.DhPubKey, message);
         sig = Crypto.SignPayload(_user.SignPrivKey, payload, message.SeqNum);
         return true;
     }
@@ -2935,10 +2911,6 @@ public partial class MainWindow : Window {
             }
 
             var convId = contact.ConversationId ?? contact.UserId;
-            if (GetOrDeriveConvKey(contact) == null) {
-                SetSidebarStatus($"group created, but invite encryption failed for {contact.DisplayName}");
-                continue;
-            }
 
             var inviteMessage = new Message {
                 Id = Guid.NewGuid().ToString("N"),
@@ -3472,7 +3444,6 @@ public partial class MainWindow : Window {
             if (!await EnsureContactKeysAsync(contact)) continue;
 
             var convId = contact.ConversationId ?? contact.UserId;
-            if (GetOrDeriveConvKey(contact) == null) continue;
 
             var notice = new Message {
                 Id = Guid.NewGuid().ToString("N"),

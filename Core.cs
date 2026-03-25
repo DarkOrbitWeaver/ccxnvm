@@ -94,6 +94,7 @@ record WireMessageV2(
     [property: JsonPropertyName("v")] int Version,
     [property: JsonPropertyName("sid")] string SessionId,
     [property: JsonPropertyName("mt")] string MessageType,
+    [property: JsonPropertyName("drpk")] string? DhRatchetPubKey,
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("ct")] string Ciphertext,
     [property: JsonPropertyName("nonce")] string Nonce,
@@ -349,7 +350,18 @@ public static class Crypto {
         !string.IsNullOrWhiteSpace(wire.Nonce) &&
         !string.IsNullOrWhiteSpace(wire.Tag) &&
         wire.SentAt > 0 &&
-        string.Equals(wire.MessageType, expectedType, StringComparison.Ordinal);
+        string.Equals(wire.MessageType, expectedType, StringComparison.Ordinal) &&
+        (expectedType != "dm" || !string.IsNullOrWhiteSpace(wire.DhRatchetPubKey));
+
+    static byte[] DeriveDhRatchetMessageKey(byte[] myDhPriv, byte[] theirDhPub, string sessionId, long seqNum) {
+        using var myKey = ECDiffieHellman.Create();
+        myKey.ImportECPrivateKey(myDhPriv, out _);
+        using var theirKey = ECDiffieHellman.Create();
+        theirKey.ImportSubjectPublicKeyInfo(theirDhPub, out _);
+        var rawSecret = myKey.DeriveKeyFromHash(theirKey.PublicKey, HashAlgorithmName.SHA256);
+        return HKDF.Expand(HashAlgorithmName.SHA256, rawSecret, 32,
+            Encoding.UTF8.GetBytes($"cipher:dm-v2:{sessionId}:{seqNum}"));
+    }
 
     // ── Message serialization ──────────────────────────────────────────────
 
@@ -367,6 +379,7 @@ public static class Crypto {
             WireMessageVersion,
             sessionId,
             "dm",
+            "legacy",
             msg.Id,
             Convert.ToBase64String(ct),
             Convert.ToBase64String(nonce),
@@ -374,6 +387,29 @@ public static class Crypto {
             msg.SeqNum,
             msg.Timestamp,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        return JsonSerializer.Serialize(wire, JsonOpts);
+    }
+
+    public static string EncryptDmWithDhRatchet(byte[] recipientDhPub, Message msg) {
+        var sessionId = string.IsNullOrWhiteSpace(msg.ConversationId) ? "dm:legacy" : msg.ConversationId;
+        var (ratchetPriv, ratchetPub) = GenerateDhKeys();
+        var msgKey = DeriveDhRatchetMessageKey(ratchetPriv, recipientDhPub, sessionId, msg.SeqNum);
+        var plain = PackMessagePlaintext(msg.Content);
+        var (ct, nonce, tag) = Encrypt(msgKey, plain);
+        var wire = new WireMessageV2(
+            WireMessageVersion,
+            sessionId,
+            "dm",
+            Convert.ToBase64String(ratchetPub),
+            msg.Id,
+            Convert.ToBase64String(ct),
+            Convert.ToBase64String(nonce),
+            Convert.ToBase64String(tag),
+            msg.SeqNum,
+            msg.Timestamp,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        Wipe(ratchetPriv);
+        Wipe(msgKey);
         return JsonSerializer.Serialize(wire, JsonOpts);
     }
 
@@ -412,6 +448,20 @@ public static class Crypto {
         } catch { return null; }
     }
 
+    public static Message? DecryptDmWithRecipientDh(byte[] myDhPriv, string senderId, string payload, bool isMine = false) {
+        try {
+            var wire = JsonSerializer.Deserialize<WireMessageV2>(payload, JsonOpts);
+            if (!HasRequiredWireFieldsV2(wire, "dm")) return null;
+            var frame = wire!;
+            if (string.IsNullOrWhiteSpace(frame.DhRatchetPubKey)) return null;
+            var theirRatchetPub = Convert.FromBase64String(frame.DhRatchetPubKey);
+            var msgKey = DeriveDhRatchetMessageKey(myDhPriv, theirRatchetPub, frame.SessionId, frame.SeqNum);
+            var msg = DecryptDmWithMessageKey(msgKey, senderId, payload, isMine);
+            Wipe(msgKey);
+            return msg;
+        } catch { return null; }
+    }
+
     /// <summary>Encrypt message for a group using the group's symmetric key.</summary>
     public static string EncryptGroup(byte[] groupKey, Message msg) {
         var msgKey = DeriveMessageKey(groupKey, msg.SeqNum);
@@ -422,6 +472,7 @@ public static class Crypto {
             WireMessageVersion,
             sessionId,
             "grp",
+            null,
             msg.Id,
             Convert.ToBase64String(ct),
             Convert.ToBase64String(nonce),
