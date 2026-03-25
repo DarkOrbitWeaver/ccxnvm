@@ -40,6 +40,18 @@ builder.Services.AddSignalR(options => {
 
 var app = builder.Build();
 app.UseForwardedHeaders();
+app.Use(async (context, next) => {
+    var headers = context.Response.Headers;
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["X-Frame-Options"] = "DENY";
+    headers["Referrer-Policy"] = "no-referrer";
+    headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()";
+    headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+    if (context.Request.IsHttps) {
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
+    }
+    await next();
+});
 
 using (var scope = app.Services.CreateScope()) {
     var store = scope.ServiceProvider.GetRequiredService<IRelayStore>();
@@ -87,16 +99,22 @@ public record KeyBundle(string UserId, string SignPubKey, string DhPubKey, long 
 public class CipherHub : Hub {
     readonly IRelayStore _store;
     readonly RelayStoreOptions _options;
+    static readonly TimeSpan KeyLookupChallengeTtl = TimeSpan.FromMinutes(2);
+    const int MaxOutstandingKeyLookupChallenges = 20_000;
 
     public CipherHub(IRelayStore store, RelayStoreOptions options) {
         _store = store;
         _options = options;
     }
 
-    public async Task Register(string userId, string signPubKey, string dhPubKey, string selfSig) {
+    public Task Register(string userId, string signPubKey, string dhPubKey, string selfSig) =>
+        throw new HubException("UPGRADE_REQUIRED");
+
+    public async Task RegisterV2(string userId, string signPubKey, string dhPubKey, string selfSig, int protocolVersion) {
+        if (protocolVersion < 2) throw new HubException("UPGRADE_REQUIRED");
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-        if (await IsRateLimitedAsync("register", 20, TimeSpan.FromMinutes(1))) {
+        if (await IsRateLimitedAsync("register", 20, TimeSpan.FromMinutes(1), userId)) {
             throw new HubException("RATE_LIMITED");
         }
 
@@ -110,6 +128,12 @@ public class CipherHub : Hub {
 
         RelayState.Connections[userId] = Context.ConnectionId;
         RelayState.ConnUsers[Context.ConnectionId] = userId;
+
+        var existing = await _store.GetKeyBundleAsync(userId);
+        if (existing != null &&
+            !string.Equals(existing.DhPubKey, dhPubKey, StringComparison.Ordinal)) {
+            Console.WriteLine($"[security] relay dh key changed user={userId} at={now}");
+        }
 
         await _store.UpsertKeyBundleAsync(new KeyBundle(
             userId,
@@ -149,7 +173,7 @@ public class CipherHub : Hub {
     public async Task UpdatePublicDisplayName(string displayName) {
         var userId = GetCallerId();
         if (userId == null) throw new HubException("NOT_REGISTERED");
-        if (await IsRateLimitedAsync($"profile:{userId}", 30, TimeSpan.FromMinutes(1)))
+        if (await IsRateLimitedAsync($"profile:{userId}", 30, TimeSpan.FromMinutes(1), userId))
             throw new HubException("RATE_LIMITED");
 
         var normalized = NormalizePublicDisplayName(displayName);
@@ -159,17 +183,26 @@ public class CipherHub : Hub {
         await _store.SetPublicDisplayNameAsync(userId, normalized);
     }
 
-    public async Task Send(string recipientId, string payload, string sig, long seqNum) {
+    public Task Send(string recipientId, string payload, string sig, long seqNum) =>
+        throw new HubException("UPGRADE_REQUIRED");
+
+    public async Task SendV2(string recipientId, string payload, string sig, long seqNum, string sessionId, string messageType, long sentAt) {
         var senderId = GetCallerId();
         if (senderId == null) throw new HubException("NOT_REGISTERED");
-        if (await IsRateLimitedAsync($"dm:{senderId}", 240, TimeSpan.FromMinutes(1)))
+        if (await IsRateLimitedAsync($"dm:{senderId}", 240, TimeSpan.FromMinutes(1), senderId))
             throw new HubException("RATE_LIMITED");
+        if (messageType != "dm") throw new HubException("INVALID_PAYLOAD");
+        if (!IsValidToken(sessionId, 8, 128)) throw new HubException("INVALID_PAYLOAD");
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (sentAt < now - (long)TimeSpan.FromDays(45).TotalMilliseconds ||
+            sentAt > now + (long)TimeSpan.FromMinutes(2).TotalMilliseconds) {
+            throw new HubException("INVALID_TIMESTAMP");
+        }
         if (!IsValidMessageEnvelope(recipientId, payload, sig))
             throw new HubException("INVALID_PAYLOAD");
         if (!await VerifyMessageAsync(senderId, payload, sig, seqNum))
             throw new HubException("INVALID_SIGNATURE");
 
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var expiresAt = now + (long)TimeSpan.FromDays(_options.PendingTtlDays).TotalMilliseconds;
         var stored = await _store.TryStoreDirectAsync(recipientId, senderId, payload, sig, seqNum, now, expiresAt);
         if (!stored)
@@ -184,7 +217,7 @@ public class CipherHub : Hub {
     public async Task SendGroup(string groupId, List<string> recipientIds, string payload, string sig, long seqNum, string authToken) {
         var senderId = GetCallerId();
         if (senderId == null) throw new HubException("NOT_REGISTERED");
-        if (await IsRateLimitedAsync($"grp:{senderId}", 120, TimeSpan.FromMinutes(1)))
+        if (await IsRateLimitedAsync($"grp:{senderId}", 120, TimeSpan.FromMinutes(1), senderId))
             throw new HubException("RATE_LIMITED");
         if (!IsValidGroupRequest(groupId, recipientIds, payload, sig, authToken))
             throw new HubException("INVALID_PAYLOAD");
@@ -214,10 +247,14 @@ public class CipherHub : Hub {
         }
     }
 
-    public async Task AckDirect(string senderId, long seqNum) {
+    public Task AckDirect(string senderId, long seqNum) =>
+        throw new HubException("UPGRADE_REQUIRED");
+
+    public async Task AckDirectV2(string senderId, long seqNum, string sessionId) {
         var recipientId = GetCallerId();
         if (recipientId == null) throw new HubException("NOT_REGISTERED");
         if (!IsValidToken(senderId, 8, 128)) throw new HubException("INVALID_ID");
+        if (!IsValidToken(sessionId, 8, 128)) throw new HubException("INVALID_ID");
         await _store.AckDirectAsync(recipientId, senderId, seqNum);
     }
 
@@ -229,26 +266,41 @@ public class CipherHub : Hub {
         await _store.AckGroupAsync(recipientId, groupId, senderId, seqNum);
     }
 
-    public string RequestKeyLookupChallenge() {
+    public Task<string> RequestKeyLookupChallenge() =>
+        throw new HubException("UPGRADE_REQUIRED");
+
+    public async Task<string> RequestKeyLookupChallengeV2() {
         var callerId = GetCallerId();
         if (callerId == null) throw new HubException("NOT_REGISTERED");
+        if (await IsRateLimitedAsync($"keys:challenge:{callerId}", 60, TimeSpan.FromMinutes(1))) {
+            throw new HubException("RATE_LIMITED");
+        }
+        CleanupExpiredKeyLookupChallenges(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        if (RelayState.KeyLookupChallenges.Count >= MaxOutstandingKeyLookupChallenges) {
+            throw new HubException("BUSY");
+        }
         var challenge = Convert.ToBase64String(RandomNumberGenerator.GetBytes(24))
             .Replace("+", "-")
-            .Replace("/", "_");
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeMilliseconds();
+            .Replace("/", "_")
+            .TrimEnd('=');
+        var expiresAt = DateTimeOffset.UtcNow.Add(KeyLookupChallengeTtl).ToUnixTimeMilliseconds();
         RelayState.KeyLookupChallenges[challenge] = new KeyLookupChallenge(callerId, expiresAt);
         return challenge;
     }
 
-    public async Task<KeyBundle?> GetKeys(string userId, string challenge, string challengeSig) {
+    public Task<KeyBundle?> GetKeys(string userId, string challenge, string challengeSig) =>
+        throw new HubException("UPGRADE_REQUIRED");
+
+    public async Task<KeyBundle?> GetPrekeyBundle(string userId, string challenge, string challengeSig) {
         var callerId = GetCallerId();
         if (callerId == null) throw new HubException("NOT_REGISTERED");
         if (!IsValidToken(userId, 8, 128)) return null;
         if (string.IsNullOrWhiteSpace(challenge) || string.IsNullOrWhiteSpace(challengeSig)) {
             throw new HubException("INVALID_CHALLENGE");
         }
-        if (await IsRateLimitedAsync("keys", 240, TimeSpan.FromMinutes(1)))
+        if (await IsRateLimitedAsync("keys", 240, TimeSpan.FromMinutes(1), callerId))
             throw new HubException("RATE_LIMITED");
+        CleanupExpiredKeyLookupChallenges(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         if (!RelayState.KeyLookupChallenges.TryRemove(challenge, out var state) ||
             !string.Equals(state.CallerUserId, callerId, StringComparison.Ordinal) ||
             state.ExpiresAt < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) {
@@ -327,6 +379,14 @@ public class CipherHub : Hub {
         return IsValidMessageEnvelope(groupId, payload, sig);
     }
 
+    static void CleanupExpiredKeyLookupChallenges(long nowMs) {
+        foreach (var entry in RelayState.KeyLookupChallenges) {
+            if (entry.Value.ExpiresAt < nowMs) {
+                RelayState.KeyLookupChallenges.TryRemove(entry.Key, out _);
+            }
+        }
+    }
+
     static bool IsValidToken(string value, int minLength, int maxLength) {
         if (string.IsNullOrWhiteSpace(value) || value.Length < minLength || value.Length > maxLength) {
             return false;
@@ -346,11 +406,15 @@ public class CipherHub : Hub {
         return userId;
     }
 
-    async Task<bool> IsRateLimitedAsync(string bucket, int limit, TimeSpan window) {
+    async Task<bool> IsRateLimitedAsync(string bucket, int limit, TimeSpan window, string? userId = null) {
         var clientKey = Context.GetHttpContext()?.Connection.RemoteIpAddress?.ToString()
             ?? Context.ConnectionId;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        return !await _store.AllowRequestAsync($"{bucket}:{clientKey}", limit, window, now);
+        var ipAllowed = await _store.AllowRequestAsync($"{bucket}:ip:{clientKey}", limit, window, now);
+        if (!ipAllowed) return true;
+        if (string.IsNullOrWhiteSpace(userId)) return false;
+        var userAllowed = await _store.AllowRequestAsync($"{bucket}:uid:{userId}", Math.Max(10, limit / 2), window, now);
+        return !userAllowed;
     }
 
     async Task<bool> VerifyMessageAsync(string senderId, string payload, string sig, long seqNum) {

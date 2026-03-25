@@ -13,7 +13,7 @@ public sealed class VaultRecoveryException : Exception {
 }
 
 public partial class Vault {
-    const int CurrentSchemaVersion = 7;
+    const int CurrentSchemaVersion = 8;
     readonly List<string> _maintenanceActions = [];
 
     public string? LastMaintenanceBackupPath { get; private set; }
@@ -68,6 +68,20 @@ public partial class Vault {
             }
             if (version < 7) {
                 TryExec("ALTER TABLE incoming_seq_state ADD COLUMN chain_key_enc BLOB");
+            }
+            if (version < 8) {
+                TryExec("ALTER TABLE contacts ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0");
+                TryExec("ALTER TABLE contacts ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0");
+                TryExec("""
+                    CREATE TABLE IF NOT EXISTS skipped_dm_keys (
+                        conversation_id TEXT NOT NULL,
+                        sender_id TEXT NOT NULL,
+                        seq_num INTEGER NOT NULL,
+                        message_key_enc BLOB NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        PRIMARY KEY (conversation_id, sender_id, seq_num)
+                    )
+                    """);
             }
             SetSetting("schema_version", CurrentSchemaVersion.ToString());
             _maintenanceActions.Add($"migrated schema v{version} -> v{CurrentSchemaVersion}");

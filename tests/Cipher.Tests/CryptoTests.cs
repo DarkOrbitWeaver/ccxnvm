@@ -94,4 +94,25 @@ public class CryptoTests {
 
         Assert.Null(Crypto.DecryptGroup(key, "grp-1", "alice", payload));
     }
+
+    [Fact]
+    public void DmWireUsesV2AndRejectsLegacyV1Payload() {
+        var key = RandomNumberGenerator.GetBytes(32);
+        var message = new Message {
+            Id = "v2-case",
+            ConversationId = "dm:a:b",
+            Content = "hello",
+            SeqNum = 5,
+            Timestamp = 10
+        };
+
+        var payload = Crypto.EncryptDm(key, message);
+        using var doc = JsonDocument.Parse(payload);
+        Assert.Equal(2, doc.RootElement.GetProperty("v").GetInt32());
+        Assert.Equal("dm", doc.RootElement.GetProperty("mt").GetString());
+        Assert.Equal("dm:a:b", doc.RootElement.GetProperty("sid").GetString());
+
+        var legacyPayload = """{"id":"x","ct":"AA==","nonce":"AA==","tag":"AA==","seq":1,"ts":0,"type":"dm"}""";
+        Assert.Null(Crypto.DecryptDm(key, "alice", legacyPayload));
+    }
 }

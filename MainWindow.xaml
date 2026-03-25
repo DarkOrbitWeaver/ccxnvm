@@ -399,6 +399,8 @@
                                         Margin="0,12,0,0"
                                         Orientation="Horizontal"
                                         HorizontalAlignment="Center">
+                                <Button x:Name="BtnShowActiveConversations" Content="Active" Padding="10,7" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnShowActiveConversations_Click" ToolTip="Show active conversations" />
+                                <Button x:Name="BtnShowArchivedConversations" Content="Archived" Padding="10,7" FontSize="12" Margin="8,0,0,0" Style="{StaticResource TermBtn}" Click="BtnShowArchivedConversations_Click" ToolTip="Show archived contacts" />
                                 <Button x:Name="BtnSidebarAddFriend" Content="Add Friend" Padding="12,7" FontSize="12" Style="{StaticResource AccentBtn}" Click="BtnAddContact_Click" ToolTip="Add direct contact" />
                                 <Button x:Name="BtnQuickNewGroup" Content="New Group" Padding="12,7" FontSize="12" Margin="10,0,0,0" Style="{StaticResource GroupBtn}" Click="BtnQuickNewGroup_Click" ToolTip="Create a new group" />
                             </StackPanel>
@@ -526,6 +528,9 @@
                                     Visibility="Collapsed">
                                 <StackPanel Orientation="Horizontal">
                                     <Button x:Name="BtnMuteConversation" Content="Mute" Margin="0,0,8,0" Padding="10,5" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnMuteConversation_Click" Visibility="Collapsed" />
+                                    <Button x:Name="BtnArchiveContact" Content="Archive" Margin="0,0,8,0" Padding="10,5" FontSize="12" Style="{StaticResource TermBtn}" Click="BtnArchiveContact_Click" Visibility="Collapsed" />
+                                    <Button x:Name="BtnRestoreContact" Content="Restore" Margin="0,0,8,0" Padding="10,5" FontSize="12" Style="{StaticResource InfoBtn}" Click="BtnRestoreContact_Click" Visibility="Collapsed" />
+                                    <Button x:Name="BtnRemoveFriend" Content="Remove Friend" Margin="0,0,8,0" Padding="10,5" FontSize="12" Style="{StaticResource NukeBtn}" Click="BtnRemoveFriend_Click" Visibility="Collapsed" />
                                     <Button x:Name="BtnGroupInvite" Content="Invite Members" Margin="0,0,8,0" Padding="10,5" FontSize="12" Style="{StaticResource GroupBtn}" Click="BtnGroupInvite_Click" Visibility="Collapsed" />
                                     <Button x:Name="BtnGroupMenu" Content="..." Padding="10,5" FontSize="13" Style="{StaticResource InfoBtn}" Click="BtnGroupMenu_Click" Visibility="Collapsed" />
                                 </StackPanel>

@@ -47,6 +47,8 @@ public class Contact {
     public bool IsOnline { get; set; }
     public long AddedAt { get; set; }
     public long LastSeen { get; set; }
+    public bool IsArchived { get; set; }
+    public long ArchivedAt { get; set; }
     public string? ConversationId { get; set; }
     public bool HasPendingKeyChange => PendingSignPubKey.Length > 0 && PendingDhPubKey.Length > 0;
 }
@@ -76,7 +78,7 @@ public class Message {
     public ConversationType ConvType { get; set; }
 }
 
-// Encrypted wire format
+// Encrypted wire format (legacy v1)
 record WireMessage(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("ct")] string Ciphertext,   // Base64 AES-GCM ciphertext
@@ -85,6 +87,20 @@ record WireMessage(
     [property: JsonPropertyName("seq")] long SeqNum,
     [property: JsonPropertyName("ts")] long Timestamp,
     [property: JsonPropertyName("type")] string Type = "dm" // dm | grp
+);
+
+// Encrypted wire format v2 (required).
+record WireMessageV2(
+    [property: JsonPropertyName("v")] int Version,
+    [property: JsonPropertyName("sid")] string SessionId,
+    [property: JsonPropertyName("mt")] string MessageType,
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("ct")] string Ciphertext,
+    [property: JsonPropertyName("nonce")] string Nonce,
+    [property: JsonPropertyName("tag")] string Tag,
+    [property: JsonPropertyName("seq")] long SeqNum,
+    [property: JsonPropertyName("ts")] long Timestamp,
+    [property: JsonPropertyName("sent_at")] long SentAt
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -314,6 +330,8 @@ public static class Crypto {
         return Encoding.UTF8.GetString(plaintext);
     }
 
+    const int WireMessageVersion = 2;
+
     static bool HasRequiredWireFields(WireMessage? wire, string expectedType) =>
         wire != null &&
         !string.IsNullOrWhiteSpace(wire.Id) &&
@@ -321,6 +339,17 @@ public static class Crypto {
         !string.IsNullOrWhiteSpace(wire.Nonce) &&
         !string.IsNullOrWhiteSpace(wire.Tag) &&
         string.Equals(wire.Type, expectedType, StringComparison.Ordinal);
+
+    static bool HasRequiredWireFieldsV2(WireMessageV2? wire, string expectedType) =>
+        wire != null &&
+        wire.Version == WireMessageVersion &&
+        !string.IsNullOrWhiteSpace(wire.SessionId) &&
+        !string.IsNullOrWhiteSpace(wire.Id) &&
+        !string.IsNullOrWhiteSpace(wire.Ciphertext) &&
+        !string.IsNullOrWhiteSpace(wire.Nonce) &&
+        !string.IsNullOrWhiteSpace(wire.Tag) &&
+        wire.SentAt > 0 &&
+        string.Equals(wire.MessageType, expectedType, StringComparison.Ordinal);
 
     // ── Message serialization ──────────────────────────────────────────────
 
@@ -333,22 +362,27 @@ public static class Crypto {
     public static string EncryptDmWithMessageKey(byte[] msgKey, Message msg) {
         var plain = PackMessagePlaintext(msg.Content);
         var (ct, nonce, tag) = Encrypt(msgKey, plain);
-        var wire = new WireMessage(
+        var sessionId = string.IsNullOrWhiteSpace(msg.ConversationId) ? "dm:legacy" : msg.ConversationId;
+        var wire = new WireMessageV2(
+            WireMessageVersion,
+            sessionId,
+            "dm",
             msg.Id,
             Convert.ToBase64String(ct),
             Convert.ToBase64String(nonce),
             Convert.ToBase64String(tag),
             msg.SeqNum,
-            msg.Timestamp);
+            msg.Timestamp,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         return JsonSerializer.Serialize(wire, JsonOpts);
     }
 
     /// <summary>Decrypt a DM wire payload. Returns null if invalid.</summary>
     public static Message? DecryptDm(byte[] conversationKey, string senderId, string payload, bool isMine = false) {
         try {
-            var wire = JsonSerializer.Deserialize<WireMessage>(payload, JsonOpts);
-            if (!HasRequiredWireFields(wire, "dm")) return null;
-            var frame = wire!;
+            var wireV2 = JsonSerializer.Deserialize<WireMessageV2>(payload, JsonOpts);
+            if (!HasRequiredWireFieldsV2(wireV2, "dm")) return null;
+            var frame = wireV2!;
             var msgKey = DeriveMessageKey(conversationKey, frame.SeqNum);
             return DecryptDmWithMessageKey(msgKey, senderId, payload, isMine);
         } catch { return null; }
@@ -356,8 +390,8 @@ public static class Crypto {
 
     public static Message? DecryptDmWithMessageKey(byte[] msgKey, string senderId, string payload, bool isMine = false) {
         try {
-            var wire = JsonSerializer.Deserialize<WireMessage>(payload, JsonOpts);
-            if (!HasRequiredWireFields(wire, "dm")) return null;
+            var wire = JsonSerializer.Deserialize<WireMessageV2>(payload, JsonOpts);
+            if (!HasRequiredWireFieldsV2(wire, "dm")) return null;
             var frame = wire!;
             var plain = Decrypt(msgKey,
                 Convert.FromBase64String(frame.Ciphertext),
@@ -383,17 +417,27 @@ public static class Crypto {
         var msgKey = DeriveMessageKey(groupKey, msg.SeqNum);
         var plain = PackMessagePlaintext(msg.Content);
         var (ct, nonce, tag) = Encrypt(msgKey, plain);
-        var wire = new WireMessage(msg.Id, Convert.ToBase64String(ct),
-            Convert.ToBase64String(nonce), Convert.ToBase64String(tag),
-            msg.SeqNum, msg.Timestamp, "grp");
+        var sessionId = string.IsNullOrWhiteSpace(msg.ConversationId) ? "grp:legacy" : msg.ConversationId;
+        var wire = new WireMessageV2(
+            WireMessageVersion,
+            sessionId,
+            "grp",
+            msg.Id,
+            Convert.ToBase64String(ct),
+            Convert.ToBase64String(nonce),
+            Convert.ToBase64String(tag),
+            msg.SeqNum,
+            msg.Timestamp,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         return JsonSerializer.Serialize(wire, JsonOpts);
     }
 
     public static Message? DecryptGroup(byte[] groupKey, string groupId, string senderId, string payload, bool isMine = false) {
         try {
-            var wire = JsonSerializer.Deserialize<WireMessage>(payload, JsonOpts);
-            if (!HasRequiredWireFields(wire, "grp")) return null;
+            var wire = JsonSerializer.Deserialize<WireMessageV2>(payload, JsonOpts);
+            if (!HasRequiredWireFieldsV2(wire, "grp")) return null;
             var frame = wire!;
+            if (!string.Equals(frame.SessionId, groupId, StringComparison.Ordinal)) return null;
             var msgKey = DeriveMessageKey(groupKey, frame.SeqNum);
             var plain = Decrypt(msgKey,
                 Convert.FromBase64String(frame.Ciphertext),
@@ -431,6 +475,8 @@ public static class Crypto {
 //  VAULT MANAGER — Encrypted SQLite. All sensitive fields AES-256-GCM encrypted.
 // ═══════════════════════════════════════════════════════════════════════════
 public partial class Vault : IDisposable {
+    const int MaxSkippedDmKeysPerSender = 256;
+    const int MaxSkippedDmAdvanceWindow = 1024;
     SqliteConnection? _db;
     readonly object _gate = new();
     byte[] _key = [];
@@ -502,7 +548,9 @@ public partial class Vault : IDisposable {
                 is_verified INTEGER NOT NULL DEFAULT 0,
                 pending_sign_pub TEXT,
                 pending_dh_pub TEXT,
-                key_changed_at INTEGER NOT NULL DEFAULT 0
+                key_changed_at INTEGER NOT NULL DEFAULT 0,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 group_id TEXT PRIMARY KEY,
@@ -552,6 +600,14 @@ public partial class Vault : IDisposable {
                 last_seq INTEGER NOT NULL DEFAULT 0,
                 chain_key_enc BLOB,
                 PRIMARY KEY (conversation_id, sender_id)
+            );
+            CREATE TABLE IF NOT EXISTS skipped_dm_keys (
+                conversation_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                seq_num INTEGER NOT NULL,
+                message_key_enc BLOB NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (conversation_id, sender_id, seq_num)
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -639,8 +695,8 @@ public partial class Vault : IDisposable {
             var conversationId = c.ConversationId ?? "";
             ExecParam(@"
                 INSERT OR REPLACE INTO contacts
-                (user_id, display_name_enc, sign_pub, dh_pub, conversation_id, sign_pub_enc, dh_pub_enc, conversation_id_enc, conversation_id_hmac, added_at, last_seen, is_verified, pending_sign_pub, pending_dh_pub, key_changed_at)
-                VALUES (@uid, @name, '', '', '', @spEnc, @dpEnc, @convEnc, @convHmac, @ts, @ls, @verified, @psp, @pdp, @changed)",
+                (user_id, display_name_enc, sign_pub, dh_pub, conversation_id, sign_pub_enc, dh_pub_enc, conversation_id_enc, conversation_id_hmac, added_at, last_seen, is_verified, pending_sign_pub, pending_dh_pub, key_changed_at, is_archived, archived_at)
+                VALUES (@uid, @name, '', '', '', @spEnc, @dpEnc, @convEnc, @convHmac, @ts, @ls, @verified, @psp, @pdp, @changed, @archived, @archivedAt)",
                 ("uid", c.UserId),
                 ("name", Crypto.EncryptStr(_key, c.DisplayName)),
                 ("spEnc", Crypto.EncryptStr(_key, Convert.ToBase64String(c.SignPubKey))),
@@ -652,7 +708,9 @@ public partial class Vault : IDisposable {
                 ("verified", c.IsVerified ? 1 : 0),
                 ("psp", c.PendingSignPubKey.Length > 0 ? Convert.ToBase64String(c.PendingSignPubKey) : DBNull.Value),
                 ("pdp", c.PendingDhPubKey.Length > 0 ? Convert.ToBase64String(c.PendingDhPubKey) : DBNull.Value),
-                ("changed", c.KeyChangedAt));
+                ("changed", c.KeyChangedAt),
+                ("archived", c.IsArchived ? 1 : 0),
+                ("archivedAt", c.ArchivedAt));
         }
     }
 
@@ -676,6 +734,8 @@ public partial class Vault : IDisposable {
                     PendingDhPubKey = ReadOptionalBase64(r, "pending_dh_pub"),
                     IsVerified = TryGetInt32(r, "is_verified") == 1,
                     KeyChangedAt = TryGetInt64(r, "key_changed_at"),
+                    IsArchived = TryGetInt32(r, "is_archived") == 1,
+                    ArchivedAt = TryGetInt64(r, "archived_at"),
                     ConversationId = conversationId,
                     AddedAt = r.GetInt64(r.GetOrdinal("added_at")),
                     LastSeen = TryGetInt64(r, "last_seen")
@@ -688,6 +748,13 @@ public partial class Vault : IDisposable {
     public void UpdateContactSeen(string userId) =>
         ExecParam("UPDATE contacts SET last_seen=@ts WHERE user_id=@uid",
             ("ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), ("uid", userId));
+
+    public void SetContactArchived(string userId, bool isArchived) =>
+        ExecParam(
+            "UPDATE contacts SET is_archived=@archived, archived_at=@archived_at WHERE user_id=@uid",
+            ("archived", isArchived ? 1 : 0),
+            ("archived_at", isArchived ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : 0),
+            ("uid", userId));
 
     // ── Groups ─────────────────────────────────────────────────────────────
 
@@ -1029,9 +1096,18 @@ public partial class Vault : IDisposable {
 
     public byte[]? ConsumeIncomingDmMessageKey(string convId, string senderId, long seq, byte[] sharedSecret) {
         lock (_gate) {
+            var skipped = TakeSkippedDmMessageKeyCore(null, convId, senderId, seq);
+            if (skipped != null) {
+                return skipped;
+            }
+
             using var tx = _db!.BeginTransaction(deferred: false);
             var (lastSeq, chainKey) = LoadIncomingChainStateCore(tx, convId, senderId);
             if (seq <= lastSeq) {
+                if (chainKey != null) Crypto.Wipe(chainKey);
+                return null;
+            }
+            if (seq - lastSeq > MaxSkippedDmAdvanceWindow) {
                 if (chainKey != null) Crypto.Wipe(chainKey);
                 return null;
             }
@@ -1046,6 +1122,7 @@ public partial class Vault : IDisposable {
                 if (step == seq) {
                     messageKey = stepKey;
                 } else {
+                    SaveSkippedDmMessageKeyCore(tx, convId, senderId, step, stepKey);
                     Crypto.Wipe(stepKey);
                 }
             }
@@ -1055,6 +1132,76 @@ public partial class Vault : IDisposable {
             Crypto.Wipe(chainKey);
             return messageKey;
         }
+    }
+
+    void SaveSkippedDmMessageKeyCore(SqliteTransaction? transaction, string convId, string senderId, long seq, byte[] messageKey) {
+        var keyEnc = Crypto.EncryptField(_key, messageKey);
+        using var insert = _db!.CreateCommand();
+        insert.Transaction = transaction;
+        insert.CommandText = """
+            INSERT OR REPLACE INTO skipped_dm_keys(conversation_id, sender_id, seq_num, message_key_enc, created_at)
+            VALUES (@conv, @sender, @seq, @key, @created)
+            """;
+        insert.Parameters.AddWithValue("@conv", convId);
+        insert.Parameters.AddWithValue("@sender", senderId);
+        insert.Parameters.AddWithValue("@seq", seq);
+        insert.Parameters.AddWithValue("@key", keyEnc);
+        insert.Parameters.AddWithValue("@created", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        insert.ExecuteNonQuery();
+
+        using var prune = _db!.CreateCommand();
+        prune.Transaction = transaction;
+        prune.CommandText = """
+            DELETE FROM skipped_dm_keys
+            WHERE conversation_id=@conv
+              AND sender_id=@sender
+              AND rowid IN (
+                SELECT rowid
+                FROM skipped_dm_keys
+                WHERE conversation_id=@conv AND sender_id=@sender
+                ORDER BY seq_num ASC
+                LIMIT (
+                  SELECT CASE
+                    WHEN COUNT(*) > @max THEN COUNT(*) - @max
+                    ELSE 0
+                  END
+                  FROM skipped_dm_keys
+                  WHERE conversation_id=@conv AND sender_id=@sender
+                )
+              )
+            """;
+        prune.Parameters.AddWithValue("@conv", convId);
+        prune.Parameters.AddWithValue("@sender", senderId);
+        prune.Parameters.AddWithValue("@max", MaxSkippedDmKeysPerSender);
+        prune.ExecuteNonQuery();
+    }
+
+    byte[]? TakeSkippedDmMessageKeyCore(SqliteTransaction? transaction, string convId, string senderId, long seq) {
+        using var cmd = _db!.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = """
+            SELECT message_key_enc
+            FROM skipped_dm_keys
+            WHERE conversation_id=@conv AND sender_id=@sender AND seq_num=@seq
+            LIMIT 1
+            """;
+        cmd.Parameters.AddWithValue("@conv", convId);
+        cmd.Parameters.AddWithValue("@sender", senderId);
+        cmd.Parameters.AddWithValue("@seq", seq);
+        var enc = cmd.ExecuteScalar() as byte[];
+        if (enc == null) return null;
+
+        using var delete = _db!.CreateCommand();
+        delete.Transaction = transaction;
+        delete.CommandText = """
+            DELETE FROM skipped_dm_keys
+            WHERE conversation_id=@conv AND sender_id=@sender AND seq_num=@seq
+            """;
+        delete.Parameters.AddWithValue("@conv", convId);
+        delete.Parameters.AddWithValue("@sender", senderId);
+        delete.Parameters.AddWithValue("@seq", seq);
+        delete.ExecuteNonQuery();
+        return Crypto.DecryptField(_key, enc);
     }
 
     public long NextSeqNum(string convId) {
@@ -1708,11 +1855,12 @@ public class NetworkClient : IAsyncDisposable {
             var dhPubKey = Convert.ToBase64String(_user.DhPubKey);
             var selfSig = Crypto.SignRegistration(_user.SignPrivKey, _user.UserId, dhPubKey);
             AppLog.Info("relay", $"register begin user={AppTelemetry.MaskUserId(_user.UserId)}");
-            await _hub.InvokeAsync("Register",
+            await _hub.InvokeAsync("RegisterV2",
                 _user.UserId,
                 Convert.ToBase64String(_user.SignPubKey),
                 dhPubKey,
-                selfSig);
+                selfSig,
+                2);
             await TryPublishDisplayNameAsync();
             _lastRegisteredConnectionId = connectionId;
             AppLog.Info("relay", $"registered relay identity for {AppTelemetry.MaskUserId(_user.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
@@ -1740,7 +1888,11 @@ public class NetworkClient : IAsyncDisposable {
         if (!IsConnected) return false;
         var started = AppTelemetry.StartTimer();
         try {
-            await _hub!.InvokeAsync("Send", recipientId, payload, sig, seqNum);
+            var wire = JsonSerializer.Deserialize<WireMessageV2>(payload);
+            if (wire == null || wire.Version < 2 || wire.MessageType != "dm") {
+                throw new InvalidOperationException("invalid dm wire envelope");
+            }
+            await _hub!.InvokeAsync("SendV2", recipientId, payload, sig, seqNum, wire.SessionId, wire.MessageType, wire.SentAt);
             AppLog.Info("relay", $"direct relay send ok recipient={AppTelemetry.MaskUserId(recipientId)} seq={seqNum} bytes={payload.Length} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         } catch (Exception ex) {
@@ -1772,9 +1924,9 @@ public class NetworkClient : IAsyncDisposable {
         var started = AppTelemetry.StartTimer();
         try {
             if (_user == null) return null;
-            var challenge = await _hub!.InvokeAsync<string>("RequestKeyLookupChallenge");
+            var challenge = await _hub!.InvokeAsync<string>("RequestKeyLookupChallengeV2");
             var challengeSig = Crypto.Sign(_user.SignPrivKey, $"{_user.UserId}:{userId}:{challenge}");
-            var result = await _hub!.InvokeAsync<KeyBundleDto?>("GetKeys", userId, challenge, challengeSig);
+            var result = await _hub!.InvokeAsync<KeyBundleDto?>("GetPrekeyBundle", userId, challenge, challengeSig);
             if (result == null) {
                 AppLog.Warn("relay", $"key lookup miss for {AppTelemetry.MaskUserId(userId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
                 return null;
@@ -1798,11 +1950,11 @@ public class NetworkClient : IAsyncDisposable {
         return profile == null ? null : (profile.Value.SignPubKey, profile.Value.DhPubKey);
     }
 
-    public async Task<bool> AckDmAsync(string senderId, long seqNum) {
+    public async Task<bool> AckDmAsync(string senderId, long seqNum, string sessionId) {
         if (!IsConnected) return false;
         var started = AppTelemetry.StartTimer();
         try {
-            await _hub!.InvokeAsync("AckDirect", senderId, seqNum);
+            await _hub!.InvokeAsync("AckDirectV2", senderId, seqNum, sessionId);
             AppLog.Info("relay", $"direct ack ok sender={AppTelemetry.MaskUserId(senderId)} seq={seqNum} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         } catch (Exception ex) {

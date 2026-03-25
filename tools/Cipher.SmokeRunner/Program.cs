@@ -105,7 +105,7 @@ static async Task OfflineDeliveryAsync(string serverUrl) {
     var decrypted = Crypto.DecryptDm(convKey, alice.UserId, envelope.payload);
 
     Ensure(decrypted != null && decrypted.Content == "offline hello", "offline queued message did not arrive intact");
-    Ensure(await bobClient.AckDmAsync(alice.UserId, envelope.seq), "recipient ack failed");
+    Ensure(await bobClient.AckDmAsync(alice.UserId, envelope.seq, convId), "recipient ack failed");
 }
 
 static async Task OfflineGroupDeliveryAsync(string serverUrl) {
@@ -165,7 +165,7 @@ static async Task AckedOfflineMessagesDoNotReplayAsync(string serverUrl) {
     await firstBobClient.ConnectAsync(bob);
 
     var delivered = await firstReceive.Task.WaitAsync(TimeSpan.FromSeconds(10));
-    Ensure(await firstBobClient.AckDmAsync(alice.UserId, delivered.seq), "ack after offline delivery failed");
+    Ensure(await firstBobClient.AckDmAsync(alice.UserId, delivered.seq, convId), "ack after offline delivery failed");
     await firstBobClient.DisposeAsync();
 
     await using var secondBobClient = new NetworkClient();

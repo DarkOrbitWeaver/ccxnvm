@@ -339,6 +339,31 @@ public class VaultTests {
         Assert.Equal("1", reopened.GetSetting("conv-muted:dm:alice:bob"));
     }
 
+    [Fact]
+    public void ArchivedContactStatePersistsAcrossVaultReload() {
+        var tempDir = CreateTempDirectory();
+        var vaultPath = Path.Combine(tempDir, "vault.db");
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        using (var vault = new Vault()) {
+            vault.Open(vaultPath, key);
+            vault.SaveContact(new Contact {
+                UserId = "friend-001",
+                DisplayName = "Friend",
+                ConversationId = "dm:a:b",
+                AddedAt = 1,
+                IsArchived = true,
+                ArchivedAt = 999
+            });
+        }
+
+        using var reopened = new Vault();
+        reopened.Open(vaultPath, key);
+        var contact = reopened.LoadContacts().Single(c => c.UserId == "friend-001");
+        Assert.True(contact.IsArchived);
+        Assert.Equal(999, contact.ArchivedAt);
+    }
+
     static LocalUser CreateUser(string serverUrl, string displayName) {
         var (signPriv, signPub) = Crypto.GenerateSigningKeys();
         var (dhPriv, dhPub) = Crypto.GenerateDhKeys();

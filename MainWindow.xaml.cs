@@ -363,6 +363,9 @@ public partial class MainWindow : Window {
     const int MaxSeqTrackerConversations = 512;
     const int MaxReceiptCacheMessages = 5_000;
     const int MaxSentReceiptKeys = 10_000;
+    const long MaxRelayMessageAgeMs = 45L * 24 * 60 * 60 * 1000;
+    const long MaxRelayFutureSkewMs = 2L * 60 * 1000;
+    const long MaxPayloadRelaySkewMs = 10L * 60 * 1000;
 
     // Reconnect outbox flush timer
     DispatcherTimer? _outboxTimer;
@@ -379,6 +382,7 @@ public partial class MainWindow : Window {
     bool _applyingShellPreferences;
     bool _exitRequested;
     bool _trayCloseHintShown;
+    bool _showArchivedContacts;
     IEnumerable<MessageViewModel> MessageItems => _messages.OfType<MessageViewModel>();
     readonly ObservableCollection<InviteContactOptionViewModel> _inviteContacts = [];
     List<InviteContactOptionViewModel> _inviteContactSource = [];
@@ -406,6 +410,7 @@ public partial class MainWindow : Window {
         ToastHost.ItemsSource = _toasts;
         ConvList.ItemsSource = _convs;
         InviteContactsList.ItemsSource = _inviteContacts;
+        UpdateConversationFilterButtons();
         LoginRememberSession.IsChecked = Session.HasSession();
         RegisterRememberSession.IsChecked = false;
         InitializeReleaseFeatures();
@@ -728,7 +733,10 @@ public partial class MainWindow : Window {
     }
 
     void UpdateComposerState() {
-        var canCompose = _activeConv != null && InputBox.IsEnabled;
+        var canCompose = _activeConv != null &&
+                         InputBox.IsEnabled &&
+                         !_showArchivedContacts &&
+                         !(_activeConv.ContactData?.IsArchived ?? false);
         BtnEmojiPicker.IsEnabled = canCompose;
         BtnSend.IsEnabled = canCompose && !string.IsNullOrWhiteSpace(GetComposerText());
         UpdateInputPlaceholderState();
@@ -739,7 +747,9 @@ public partial class MainWindow : Window {
 
         InputPlaceholder.Text = _activeConv == null
             ? "Choose a conversation to start chatting"
-            : "Type a message...";
+            : (_activeConv.ContactData?.IsArchived ?? false)
+                ? "Restore this contact from Archive to send messages"
+                : "Type a message...";
         InputPlaceholder.Visibility = string.IsNullOrWhiteSpace(GetComposerText())
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -774,6 +784,14 @@ public partial class MainWindow : Window {
         _vault.IsOpen &&
         string.Equals(_vault.GetSetting(ConversationMuteSettingKey(conversationId)), "1", StringComparison.Ordinal);
 
+    void UpdateConversationFilterButtons() {
+        if (BtnShowActiveConversations == null || BtnShowArchivedConversations == null) return;
+        BtnShowActiveConversations.Style = (Style)FindResource(_showArchivedContacts ? "TermBtn" : "InfoBtn");
+        BtnShowArchivedConversations.Style = (Style)FindResource(_showArchivedContacts ? "InfoBtn" : "TermBtn");
+        BtnSidebarAddFriend.Visibility = _showArchivedContacts ? Visibility.Collapsed : Visibility.Visible;
+        BtnQuickNewGroup.Visibility = _showArchivedContacts ? Visibility.Collapsed : Visibility.Visible;
+    }
+
     void SetConversationMuted(ConvViewModel conv, bool isMuted) {
         conv.IsMuted = isMuted;
         if (_vault.IsOpen) {
@@ -783,9 +801,12 @@ public partial class MainWindow : Window {
     }
 
     void RefreshMuteButton() {
-        if (BtnMuteConversation == null) return;
+        if (BtnMuteConversation == null || BtnArchiveContact == null || BtnRestoreContact == null || BtnRemoveFriend == null) return;
         if (_activeConv == null) {
             BtnMuteConversation.Visibility = Visibility.Collapsed;
+            BtnArchiveContact.Visibility = Visibility.Collapsed;
+            BtnRestoreContact.Visibility = Visibility.Collapsed;
+            BtnRemoveFriend.Visibility = Visibility.Collapsed;
             return;
         }
 
@@ -795,6 +816,16 @@ public partial class MainWindow : Window {
             ? "Allow desktop notifications for this chat"
             : "Silence desktop notifications for this chat";
         BtnMuteConversation.Style = (Style)FindResource(_activeConv.IsMuted ? "TermBtn" : "InfoBtn");
+        var contact = _activeConv.ContactData;
+        if (contact == null) {
+            BtnArchiveContact.Visibility = Visibility.Collapsed;
+            BtnRestoreContact.Visibility = Visibility.Collapsed;
+            BtnRemoveFriend.Visibility = Visibility.Collapsed;
+        } else {
+            BtnArchiveContact.Visibility = contact.IsArchived ? Visibility.Collapsed : Visibility.Visible;
+            BtnRestoreContact.Visibility = contact.IsArchived ? Visibility.Visible : Visibility.Collapsed;
+            BtnRemoveFriend.Visibility = contact.IsArchived ? Visibility.Collapsed : Visibility.Visible;
+        }
         UpdateComposerState();
     }
 
@@ -1307,6 +1338,7 @@ public partial class MainWindow : Window {
 
         // Load contacts and groups
         LoadConversations();
+        _vault.SetSetting("protocol_upgrade", "2");
 
         // Connect to relay
         WireNetworkEvents();
@@ -1315,11 +1347,42 @@ public partial class MainWindow : Window {
         await _net.ConnectAsync(_user);
     }
 
+    void BtnShowActiveConversations_Click(object s, RoutedEventArgs e) {
+        if (!_showArchivedContacts) return;
+        _showArchivedContacts = false;
+        UpdateConversationFilterButtons();
+        ReloadConversationListAfterFilterChange();
+    }
+
+    void BtnShowArchivedConversations_Click(object s, RoutedEventArgs e) {
+        if (_showArchivedContacts) return;
+        _showArchivedContacts = true;
+        UpdateConversationFilterButtons();
+        ReloadConversationListAfterFilterChange();
+    }
+
+    void ReloadConversationListAfterFilterChange() {
+        var previousId = _activeConvId;
+        LoadConversations();
+        var next = _convs.FirstOrDefault(c => string.Equals(c.Id, previousId, StringComparison.Ordinal));
+        if (next != null) {
+            ConvList.SelectedItem = next;
+        } else {
+            _activeConv = null;
+            _activeConvId = "";
+            _messages.Clear();
+            SetConversationSurfaceState(false);
+            UpdateActiveConversationSecurityUi();
+        }
+    }
+
     void LoadConversations() {
         _convs.Clear();
         _seqTracker.Clear();
         _seqTrackerTouched.Clear();
-        var contacts = _vault.LoadContacts();
+        var contacts = _vault.LoadContacts()
+            .Where(c => c.IsArchived == _showArchivedContacts)
+            .ToList();
         foreach (var c in contacts) {
             var conv = new ConvViewModel {
                 Id = c.ConversationId ?? c.UserId,
@@ -1332,7 +1395,7 @@ public partial class MainWindow : Window {
             UpdateConversationSnapshot(conv);
             _convs.Add(conv);
         }
-        var groups = _vault.LoadGroups();
+        var groups = _showArchivedContacts ? new List<GroupInfo>() : _vault.LoadGroups();
         foreach (var g in groups) {
             var conv = new ConvViewModel {
                 Id = g.GroupId,
@@ -1361,10 +1424,13 @@ public partial class MainWindow : Window {
             AppLog.Info("relay", "connected");
             ApplyConnectionState(RelayConnectionState.Connected, "relay connected");
             // Announce presence to all contacts
-            var ids = _convs.Where(c => !c.IsGroup).Select(c => c.ContactData!.UserId).ToList();
+            var ids = _vault.LoadContacts()
+                .Where(c => !c.IsArchived)
+                .Select(c => c.UserId)
+                .ToList();
             _ = _net.AnnouncePresenceAsync(ids);
-            foreach (var contact in _convs.Where(c => !c.IsGroup)
-                                          .Select(c => c.ContactData!)
+            foreach (var contact in _vault.LoadContacts()
+                                          .Where(c => !c.IsArchived)
                                           .Where(c => c.SignPubKey.Length == 0 || c.DhPubKey.Length == 0))
                 RunUiTask(async () => { await EnsureContactKeysAsync(contact); }, "refresh contact keys", showSidebarErrors: false);
             RunUiTask(FlushOutboxAsync, "flush outbox", showSidebarErrors: false);
@@ -1689,12 +1755,35 @@ public partial class MainWindow : Window {
 
     // ── Incoming message handlers ─────────────────────────────────────────
 
-    async Task HandleIncomingDmAsync(string senderId, string payload, string sig, long seq, long ts) {
-        // Find contact
-        var conv = _convs.FirstOrDefault(c => c.ContactData?.UserId == senderId);
-        if (conv == null) return; // Unknown sender — ignore
+    static bool IsRelayTimestampAcceptable(long relayTimestamp) {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return relayTimestamp >= now - MaxRelayMessageAgeMs &&
+               relayTimestamp <= now + MaxRelayFutureSkewMs;
+    }
 
-        var contact = conv.ContactData!;
+    static bool IsPayloadTimestampAcceptable(long payloadTimestamp, long relayTimestamp) {
+        return payloadTimestamp >= relayTimestamp - MaxPayloadRelaySkewMs &&
+               payloadTimestamp <= relayTimestamp + MaxPayloadRelaySkewMs;
+    }
+
+    async Task HandleIncomingDmAsync(string senderId, string payload, string sig, long seq, long ts) {
+        if (!IsRelayTimestampAcceptable(ts)) {
+            AppLog.Warn("recv", $"dropped direct envelope with out-of-window relay timestamp sender={AppTelemetry.MaskUserId(senderId)} seq={seq}");
+            await _net.AckDmAsync(senderId, seq, senderId);
+            return;
+        }
+
+        // Find contact (also allow archived contacts that are hidden in active view)
+        var conv = _convs.FirstOrDefault(c => c.ContactData?.UserId == senderId);
+        var contact = conv?.ContactData ?? _vault.LoadContacts().FirstOrDefault(c => c.UserId == senderId);
+        if (contact == null) return; // Unknown sender — ignore
+        conv ??= new ConvViewModel {
+            Id = contact.ConversationId ?? contact.UserId,
+            DisplayName = contact.DisplayName,
+            IsGroup = false,
+            ContactData = contact,
+            IsMuted = true
+        };
         AppLog.Info("recv", $"direct envelope from {AppTelemetry.MaskUserId(senderId)} seq={seq} bytes={payload.Length}");
         if (!await EnsureContactKeysAsync(contact)) return;
 
@@ -1707,32 +1796,43 @@ public partial class MainWindow : Window {
 
         var msgKey = _vault.ConsumeIncomingDmMessageKey(conv.Id, contact.UserId, seq, convKey);
         if (msgKey == null) {
-            await _net.AckDmAsync(senderId, seq);
+            await _net.AckDmAsync(senderId, seq, conv.Id);
             return;
         }
 
         var msg = Crypto.DecryptDmWithMessageKey(msgKey, senderId, payload);
         Crypto.Wipe(msgKey);
         if (msg == null) return;
+        if (!IsPayloadTimestampAcceptable(msg.Timestamp, ts)) {
+            AppLog.Warn("recv", $"direct payload timestamp out of bounds sender={AppTelemetry.MaskUserId(senderId)} seq={seq} relay_ts={ts} payload_ts={msg.Timestamp}");
+            msg.Timestamp = ts;
+        }
 
         msg.ConversationId = conv.Id;
         msg.IsMine = false;
         if (TryHandleDirectSystemMessage(contact, msg)) {
-            await _net.AckDmAsync(senderId, seq);
+            await _net.AckDmAsync(senderId, seq, conv.Id);
             AppLog.Info("recv", $"processed system direct message from {AppTelemetry.MaskUserId(senderId)} seq={seq}");
             return;
         }
 
         if (_vault.MessageExists(msg.Id)) {
-            await _net.AckDmAsync(senderId, seq);
+            await _net.AckDmAsync(senderId, seq, conv.Id);
             AppLog.Warn("recv", $"ignored duplicate direct message {AppTelemetry.MaskUserId(msg.Id)} seq={seq}");
             return;
         }
 
         _vault.SaveMessage(msg);
         UpdateConversationSnapshot(conv, msg, contact.DisplayName);
-        await _net.AckDmAsync(senderId, seq);
+        await _net.AckDmAsync(senderId, seq, conv.Id);
         await SendDirectReceiptAsync(contact, msg, ReceiptStatusReceived);
+        if (contact.IsArchived) {
+            if (_showArchivedContacts && !_convs.Any(c => c.ContactData?.UserId == contact.UserId)) {
+                _convs.Add(conv);
+            }
+            AppLog.Info("recv", $"stored archived direct message {AppTelemetry.MaskUserId(msg.Id)} seq={seq}");
+            return;
+        }
 
         // If this conversation is active, show the message
         if (conv.Id == _activeConvId) {
@@ -1751,6 +1851,12 @@ public partial class MainWindow : Window {
     }
 
     async Task HandleIncomingGroupAsync(string groupId, string senderId, string payload, string sig, long seq, long ts) {
+        if (!IsRelayTimestampAcceptable(ts)) {
+            AppLog.Warn("recv", $"dropped group envelope with out-of-window relay timestamp group={AppTelemetry.MaskUserId(groupId)} sender={AppTelemetry.MaskUserId(senderId)} seq={seq}");
+            await _net.AckGroupAsync(groupId, senderId, seq);
+            return;
+        }
+
         // Handle group prefix in payload from server
         var actualPayload = payload.StartsWith($"GROUP:{groupId}:")
             ? payload[$"GROUP:{groupId}:".Length..] : payload;
@@ -1774,6 +1880,10 @@ public partial class MainWindow : Window {
 
         var msg = Crypto.DecryptGroup(group.GroupKey, groupId, senderId, actualPayload);
         if (msg == null) return;
+        if (!IsPayloadTimestampAcceptable(msg.Timestamp, ts)) {
+            AppLog.Warn("recv", $"group payload timestamp out of bounds group={AppTelemetry.MaskUserId(groupId)} sender={AppTelemetry.MaskUserId(senderId)} seq={seq} relay_ts={ts} payload_ts={msg.Timestamp}");
+            msg.Timestamp = ts;
+        }
 
         msg.ConversationId = groupId;
         msg.IsMine = false;
@@ -1855,7 +1965,14 @@ public partial class MainWindow : Window {
 
         if (_activeConv?.ContactData is not Contact contact) {
             BtnSecurityReview.Visibility = Visibility.Collapsed;
-            InputBox.IsEnabled = true;
+            InputBox.IsEnabled = !_showArchivedContacts;
+            UpdateComposerState();
+            return;
+        }
+
+        if (contact.IsArchived) {
+            BtnSecurityReview.Visibility = Visibility.Collapsed;
+            InputBox.IsEnabled = false;
             UpdateComposerState();
             return;
         }
@@ -1883,7 +2000,7 @@ public partial class MainWindow : Window {
         BtnSecurityReview.ToolTip = contact.IsVerified
             ? "contact safety number verified"
             : "compare and verify this contact's safety number";
-        InputBox.IsEnabled = true;
+        InputBox.IsEnabled = !_showArchivedContacts;
         UpdateComposerState();
     }
 
@@ -2072,6 +2189,13 @@ public partial class MainWindow : Window {
     async Task SendDmAsync(Message msg, MessageViewModel vm) {
         var started = AppTelemetry.StartTimer();
         var contact = _activeConv!.ContactData!;
+        if (contact.IsArchived) {
+            vm.Status = MessageStatus.Failed;
+            ApplyReceiptUi(vm);
+            SetSidebarStatus($"restore {contact.DisplayName} from archive before sending");
+            AppLog.Warn("send", $"direct send blocked for archived contact {AppTelemetry.MaskUserId(contact.UserId)}");
+            return;
+        }
         if (!await EnsureContactKeysAsync(contact)) {
             vm.Status = MessageStatus.Failed;
             ApplyReceiptUi(vm);
@@ -2184,6 +2308,9 @@ public partial class MainWindow : Window {
     // ── Key management ────────────────────────────────────────────────────
 
     async Task<bool> EnsureContactKeysAsync(Contact contact) {
+        if (contact.IsArchived) {
+            return contact.SignPubKey.Length > 0 && contact.DhPubKey.Length > 0;
+        }
         if (contact.HasPendingKeyChange) return false;
 
         if (!_net.IsConnected) {
@@ -2971,7 +3098,22 @@ public partial class MainWindow : Window {
         if (string.IsNullOrEmpty(uid)) { ShowAddStatus("enter a user id"); return; }
         if (!IsValidUserId(uid)) { ShowAddStatus("enter a valid user id"); return; }
         if (uid == _user!.UserId) { ShowAddStatus("that's your own id"); return; }
-        if (_vault.LoadContacts().Any(c => c.UserId == uid)) { ShowAddStatus("already in contacts"); return; }
+        var existing = _vault.LoadContacts().FirstOrDefault(c => c.UserId == uid);
+        if (existing != null) {
+            if (existing.IsArchived) {
+                existing.IsArchived = false;
+                existing.ArchivedAt = 0;
+                _vault.SaveContact(existing);
+                _vault.SetContactArchived(existing.UserId, false);
+                _showArchivedContacts = false;
+                UpdateConversationFilterButtons();
+                ReloadConversationListAfterFilterChange();
+                ShowAddStatus("restored from archive", false);
+                return;
+            }
+            ShowAddStatus("already in contacts");
+            return;
+        }
 
         ShowAddStatus("fetching public profile from relay...");
 
@@ -3043,7 +3185,9 @@ public partial class MainWindow : Window {
                                    .Where(m => !string.IsNullOrEmpty(m) && m != _user!.UserId)
                                    .Distinct().ToList();
 
-        var contactsById = _vault.LoadContacts().ToDictionary(c => c.UserId);
+        var contactsById = _vault.LoadContacts()
+            .Where(c => !c.IsArchived)
+            .ToDictionary(c => c.UserId);
         var missingContacts = memberIds.Where(id => !contactsById.ContainsKey(id)).Distinct().ToList();
         if (missingContacts.Count > 0) {
             ShowAddStatus("add all group members as direct contacts first");
@@ -3098,6 +3242,7 @@ public partial class MainWindow : Window {
         }
 
         var contacts = _vault.LoadContacts()
+            .Where(contact => !contact.IsArchived)
             .OrderBy(contact => contact.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(contact => contact.UserId, StringComparer.Ordinal)
             .ToList();
@@ -3213,7 +3358,9 @@ public partial class MainWindow : Window {
             return;
         }
 
-        var contactsById = _vault.LoadContacts().ToDictionary(c => c.UserId);
+        var contactsById = _vault.LoadContacts()
+            .Where(c => !c.IsArchived)
+            .ToDictionary(c => c.UserId);
         group.MemberIds = group.MemberIds.Concat(newMembers).Distinct().ToList();
         // Rotate group key on membership change so prior group snapshots cannot read future traffic.
         group.GroupKey = RandomNumberGenerator.GetBytes(32);
@@ -3263,13 +3410,63 @@ public partial class MainWindow : Window {
         AppLog.Info("notify", $"{(next ? "muted" : "unmuted")} {AppTelemetry.DescribeConversation(_activeConv.Id, _activeConv.IsGroup)}");
     }
 
+    void BtnArchiveContact_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(() => ArchiveActiveContactAsync(removeCopy: false), "archive contact", showSidebarErrors: false);
+
+    void BtnRemoveFriend_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(() => ArchiveActiveContactAsync(removeCopy: true), "remove friend", showSidebarErrors: false);
+
+    async Task ArchiveActiveContactAsync(bool removeCopy) {
+        if (_activeConv?.ContactData is not Contact contact) return;
+        var title = removeCopy ? $"Remove {contact.DisplayName}?" : $"Archive {contact.DisplayName}?";
+        var body = removeCopy
+            ? $"{contact.DisplayName} will move to Archive. Chat history stays on this device, and sending is disabled until restored."
+            : $"{contact.DisplayName} will move to Archive. Archived contacts are muted and hidden from active chats.";
+        var confirm = ActionConfirmWindow.Show(
+            this,
+            title,
+            body,
+            removeCopy ? "Remove friend" : "Archive",
+            "You can restore archived contacts anytime.",
+            destructive: removeCopy);
+        if (!confirm) return;
+
+        await Task.CompletedTask;
+        contact.IsArchived = true;
+        contact.ArchivedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _vault.SaveContact(contact);
+        _vault.SetContactArchived(contact.UserId, true);
+        _activeConv.IsMuted = true;
+        ReloadConversationListAfterFilterChange();
+        SetSidebarStatus(removeCopy
+            ? $"{contact.DisplayName} moved to archive"
+            : $"archived {contact.DisplayName}");
+    }
+
+    void BtnRestoreContact_Click(object s, RoutedEventArgs e) =>
+        RunUiTask(RestoreActiveContactAsync, "restore contact", showSidebarErrors: false);
+
+    async Task RestoreActiveContactAsync() {
+        if (_activeConv?.ContactData is not Contact contact) return;
+        await Task.CompletedTask;
+        contact.IsArchived = false;
+        contact.ArchivedAt = 0;
+        _vault.SaveContact(contact);
+        _vault.SetContactArchived(contact.UserId, false);
+        _activeConv.IsMuted = false;
+        ReloadConversationListAfterFilterChange();
+        SetSidebarStatus($"restored {contact.DisplayName}");
+    }
+
     void BtnCloseGroupMenu_Click(object s, RoutedEventArgs e) =>
         GroupMenuPopup.IsOpen = false;
 
     async Task SendGroupDeleteNoticeAsync(GroupInfo group) {
         if (_user == null) return;
 
-        var contactsById = _vault.LoadContacts().ToDictionary(c => c.UserId);
+        var contactsById = _vault.LoadContacts()
+            .Where(c => !c.IsArchived)
+            .ToDictionary(c => c.UserId);
         foreach (var memberId in group.MemberIds.Where(id => id != _user.UserId).Distinct()) {
             if (!contactsById.TryGetValue(memberId, out var contact)) continue;
             if (!await EnsureContactKeysAsync(contact)) continue;
