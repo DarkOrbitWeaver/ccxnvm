@@ -266,7 +266,13 @@ public class VaultTests {
         using var reopened = new Vault();
         reopened.Open(vaultPath, key);
 
+        // Migration mode must be explicitly enabled to allow fallback to legacy
+        // plaintext columns. This mirrors how the app uses it: only during a
+        // deliberate one-time migration pass, never during normal operation.
+        reopened.EnableLegacyMigration();
         var groups = reopened.LoadGroups();
+        reopened.DisableLegacyMigration();
+
         Assert.Single(groups);
         Assert.Equal(["owner-001", "friend-002"], groups[0].MemberIds);
         Assert.Equal("owner-001", groups[0].OwnerId);

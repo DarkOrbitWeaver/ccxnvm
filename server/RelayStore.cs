@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 using System.Data.Common;
 using System.Globalization;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -79,9 +81,12 @@ public interface IRelayStore {
     Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default);
     Task<bool> TryStoreDirectAsync(string recipientId, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
     Task<bool> TryStoreGroupAsync(string groupId, IReadOnlyList<string> recipientIds, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
+    Task<bool> AuthorizeGroupSendAsync(string groupId, string authToken, string senderId, IReadOnlyList<string> recipientIds, long nowMs, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<PendingRelayMessage>> GetPendingMessagesAsync(string recipientId, int limit, long nowMs, CancellationToken cancellationToken = default);
     Task AckDirectAsync(string recipientId, string senderId, long seqNum, CancellationToken cancellationToken = default);
     Task AckGroupAsync(string recipientId, string groupId, string senderId, long seqNum, CancellationToken cancellationToken = default);
+    Task RecordDirectContactAsync(string senderId, string recipientId, long nowMs, CancellationToken cancellationToken = default);
+    Task<bool> AreMutualContactsAsync(string userA, string userB, CancellationToken cancellationToken = default);
 }
 
 public static class RelayStoreFactory {
@@ -110,9 +115,12 @@ abstract class RelayStoreBase : IRelayStore {
     public abstract Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default);
     public abstract Task<bool> TryStoreDirectAsync(string recipientId, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
     public abstract Task<bool> TryStoreGroupAsync(string groupId, IReadOnlyList<string> recipientIds, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
+    public abstract Task<bool> AuthorizeGroupSendAsync(string groupId, string authToken, string senderId, IReadOnlyList<string> recipientIds, long nowMs, CancellationToken cancellationToken = default);
     public abstract Task<IReadOnlyList<PendingRelayMessage>> GetPendingMessagesAsync(string recipientId, int limit, long nowMs, CancellationToken cancellationToken = default);
     public abstract Task AckDirectAsync(string recipientId, string senderId, long seqNum, CancellationToken cancellationToken = default);
     public abstract Task AckGroupAsync(string recipientId, string groupId, string senderId, long seqNum, CancellationToken cancellationToken = default);
+    public abstract Task RecordDirectContactAsync(string senderId, string recipientId, long nowMs, CancellationToken cancellationToken = default);
+    public abstract Task<bool> AreMutualContactsAsync(string userA, string userB, CancellationToken cancellationToken = default);
 
     protected static string SchemaSql => """
         CREATE TABLE IF NOT EXISTS key_bundles (
@@ -160,6 +168,30 @@ abstract class RelayStoreBase : IRelayStore {
         );
 
         CREATE INDEX IF NOT EXISTS idx_rate_limit_bucket ON rate_limit_events(bucket, seen_at);
+
+        CREATE TABLE IF NOT EXISTS contact_edges (
+            owner_user_id TEXT NOT NULL,
+            contact_user_id TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (owner_user_id, contact_user_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_contact_edges_contact ON contact_edges(contact_user_id);
+
+        CREATE TABLE IF NOT EXISTS group_auth (
+            group_id TEXT PRIMARY KEY,
+            auth_token TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (group_id, user_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
         """;
 
     protected async Task PruneRecipientQueueAsync(Func<string, IReadOnlyList<SqlArg>, CancellationToken, Task> executeAsync, string recipientId, CancellationToken cancellationToken) {
@@ -390,6 +422,89 @@ sealed class SqliteRelayStore : RelayStoreBase {
         return true;
     }
 
+    public override async Task<bool> AuthorizeGroupSendAsync(string groupId, string authToken, string senderId, IReadOnlyList<string> recipientIds, long nowMs, CancellationToken cancellationToken = default) {
+        var normalizedRecipients = recipientIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        string? storedToken = null;
+        await using (var select = connection.CreateCommand()) {
+            select.CommandText = "SELECT auth_token FROM group_auth WHERE group_id=@group_id LIMIT 1";
+            select.Parameters.AddWithValue("@group_id", groupId);
+            var value = await select.ExecuteScalarAsync(cancellationToken);
+            storedToken = value as string;
+        }
+
+        if (string.IsNullOrWhiteSpace(storedToken)) {
+            await ExecuteNonQueryAsync(connection,
+                """
+                INSERT OR REPLACE INTO group_auth(group_id, auth_token, updated_at)
+                VALUES (@group_id, @auth_token, @updated_at)
+                """,
+                [
+                    SqlArg.Text("group_id", groupId),
+                    SqlArg.Text("auth_token", authToken),
+                    SqlArg.Integer("updated_at", nowMs)
+                ],
+                cancellationToken);
+
+            var initialMembers = normalizedRecipients
+                .Append(senderId)
+                .Distinct(StringComparer.Ordinal);
+            foreach (var memberId in initialMembers) {
+                await ExecuteNonQueryAsync(connection,
+                    """
+                    INSERT OR REPLACE INTO group_members(group_id, user_id, updated_at)
+                    VALUES (@group_id, @user_id, @updated_at)
+                    """,
+                    [
+                        SqlArg.Text("group_id", groupId),
+                        SqlArg.Text("user_id", memberId),
+                        SqlArg.Integer("updated_at", nowMs)
+                    ],
+                    cancellationToken);
+            }
+        } else {
+            if (!SecureEquals(storedToken, authToken)) {
+                return false;
+            }
+
+            var senderIsMember = await ExecuteScalarLongAsync(connection,
+                """
+                SELECT COUNT(*)
+                FROM group_members
+                WHERE group_id=@group_id AND user_id=@user_id
+                """,
+                [
+                    SqlArg.Text("group_id", groupId),
+                    SqlArg.Text("user_id", senderId)
+                ],
+                cancellationToken);
+            if (senderIsMember == 0) {
+                return false;
+            }
+
+            foreach (var recipientId in normalizedRecipients) {
+                await ExecuteNonQueryAsync(connection,
+                    """
+                    INSERT OR REPLACE INTO group_members(group_id, user_id, updated_at)
+                    VALUES (@group_id, @user_id, @updated_at)
+                    """,
+                    [
+                        SqlArg.Text("group_id", groupId),
+                        SqlArg.Text("user_id", recipientId),
+                        SqlArg.Integer("updated_at", nowMs)
+                    ],
+                    cancellationToken);
+            }
+        }
+        return true;
+    }
+
     public override async Task<IReadOnlyList<PendingRelayMessage>> GetPendingMessagesAsync(string recipientId, int limit, long nowMs, CancellationToken cancellationToken = default) {
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
@@ -400,10 +515,16 @@ sealed class SqliteRelayStore : RelayStoreBase {
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
+            WITH ranked AS (
+                SELECT kind, recipient_id, sender_id, payload, sig, seq_num, ts, group_id, inserted_at,
+                       ROW_NUMBER() OVER (PARTITION BY sender_id ORDER BY inserted_at ASC) AS rn
+                FROM pending_messages
+                WHERE recipient_id = @recipient_id
+                  AND expires_at > @now_ms
+            )
             SELECT kind, recipient_id, sender_id, payload, sig, seq_num, ts, group_id
-            FROM pending_messages
-            WHERE recipient_id = @recipient_id
-              AND expires_at > @now_ms
+            FROM ranked
+            WHERE rn <= 20
             ORDER BY inserted_at ASC
             LIMIT @limit
             """;
@@ -467,6 +588,43 @@ sealed class SqliteRelayStore : RelayStoreBase {
                 SqlArg.Text("group_id", groupId)
             ],
             cancellationToken);
+    }
+
+    public override async Task RecordDirectContactAsync(string senderId, string recipientId, long nowMs, CancellationToken cancellationToken = default) {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await ExecuteNonQueryAsync(connection,
+            """
+            INSERT OR REPLACE INTO contact_edges(owner_user_id, contact_user_id, updated_at)
+            VALUES (@owner_user_id, @contact_user_id, @updated_at)
+            """,
+            [
+                SqlArg.Text("owner_user_id", senderId),
+                SqlArg.Text("contact_user_id", recipientId),
+                SqlArg.Integer("updated_at", nowMs)
+            ],
+            cancellationToken);
+    }
+
+    public override async Task<bool> AreMutualContactsAsync(string userA, string userB, CancellationToken cancellationToken = default) {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var count = await ExecuteScalarLongAsync(connection,
+            """
+            SELECT COUNT(*)
+            FROM contact_edges a
+            JOIN contact_edges b
+              ON a.owner_user_id = @user_a
+             AND a.contact_user_id = @user_b
+             AND b.owner_user_id = @user_b
+             AND b.contact_user_id = @user_a
+            """,
+            [
+                SqlArg.Text("user_a", userA),
+                SqlArg.Text("user_b", userB)
+            ],
+            cancellationToken);
+        return count > 0;
     }
 
     static async Task<bool> TryAdvanceDirectSeqAsync(SqliteConnection connection, DbTransaction transaction, string recipientId, string senderId, long seqNum, CancellationToken cancellationToken) {
@@ -549,6 +707,16 @@ sealed class SqliteRelayStore : RelayStoreBase {
         foreach (var arg in args) {
             command.Parameters.AddWithValue("@" + arg.Name, arg.ToDbValue());
         }
+    }
+
+    static bool SecureEquals(string a, string b) {
+        var left = Encoding.UTF8.GetBytes(a);
+        var right = Encoding.UTF8.GetBytes(b);
+        var match = left.Length == right.Length &&
+                    CryptographicOperations.FixedTimeEquals(left, right);
+        CryptographicOperations.ZeroMemory(left);
+        CryptographicOperations.ZeroMemory(right);
+        return match;
     }
 }
 
@@ -759,6 +927,81 @@ sealed class TursoRelayStore : RelayStoreBase {
         return true;
     }
 
+    public override async Task<bool> AuthorizeGroupSendAsync(string groupId, string authToken, string senderId, IReadOnlyList<string> recipientIds, long nowMs, CancellationToken cancellationToken = default) {
+        var normalizedRecipients = recipientIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        var rows = await QueryRowsAsync(
+            "SELECT auth_token FROM group_auth WHERE group_id=@group_id LIMIT 1",
+            [SqlArg.Text("group_id", groupId)],
+            cancellationToken);
+        var storedToken = rows.Count > 0 ? AsString(rows[0][0]) : null;
+
+        if (string.IsNullOrWhiteSpace(storedToken)) {
+            await ExecuteNonQueryAsync(
+                """
+                INSERT OR REPLACE INTO group_auth(group_id, auth_token, updated_at)
+                VALUES (@group_id, @auth_token, @updated_at)
+                """,
+                [
+                    SqlArg.Text("group_id", groupId),
+                    SqlArg.Text("auth_token", authToken),
+                    SqlArg.Integer("updated_at", nowMs)
+                ],
+                cancellationToken);
+
+            foreach (var memberId in normalizedRecipients.Append(senderId).Distinct(StringComparer.Ordinal)) {
+                await ExecuteNonQueryAsync(
+                    """
+                    INSERT OR REPLACE INTO group_members(group_id, user_id, updated_at)
+                    VALUES (@group_id, @user_id, @updated_at)
+                    """,
+                    [
+                        SqlArg.Text("group_id", groupId),
+                        SqlArg.Text("user_id", memberId),
+                        SqlArg.Integer("updated_at", nowMs)
+                    ],
+                    cancellationToken);
+            }
+            return true;
+        }
+
+        if (!SecureEquals(storedToken, authToken)) {
+            return false;
+        }
+
+        var senderIsMember = await ExecuteScalarLongAsync(
+            """
+            SELECT COUNT(*)
+            FROM group_members
+            WHERE group_id=@group_id AND user_id=@user_id
+            """,
+            [
+                SqlArg.Text("group_id", groupId),
+                SqlArg.Text("user_id", senderId)
+            ],
+            cancellationToken);
+        if (senderIsMember == 0) return false;
+
+        foreach (var recipientId in normalizedRecipients) {
+            await ExecuteNonQueryAsync(
+                """
+                INSERT OR REPLACE INTO group_members(group_id, user_id, updated_at)
+                VALUES (@group_id, @user_id, @updated_at)
+                """,
+                [
+                    SqlArg.Text("group_id", groupId),
+                    SqlArg.Text("user_id", recipientId),
+                    SqlArg.Integer("updated_at", nowMs)
+                ],
+                cancellationToken);
+        }
+
+        return true;
+    }
+
     public override async Task<IReadOnlyList<PendingRelayMessage>> GetPendingMessagesAsync(string recipientId, int limit, long nowMs, CancellationToken cancellationToken = default) {
         await ExecuteNonQueryAsync(
             "DELETE FROM pending_messages WHERE expires_at <= @now_ms",
@@ -767,10 +1010,16 @@ sealed class TursoRelayStore : RelayStoreBase {
 
         var rows = await QueryRowsAsync(
             """
+            WITH ranked AS (
+                SELECT kind, recipient_id, sender_id, payload, sig, seq_num, ts, group_id, inserted_at,
+                       ROW_NUMBER() OVER (PARTITION BY sender_id ORDER BY inserted_at ASC) AS rn
+                FROM pending_messages
+                WHERE recipient_id = @recipient_id
+                  AND expires_at > @now_ms
+            )
             SELECT kind, recipient_id, sender_id, payload, sig, seq_num, ts, group_id
-            FROM pending_messages
-            WHERE recipient_id = @recipient_id
-              AND expires_at > @now_ms
+            FROM ranked
+            WHERE rn <= 20
             ORDER BY inserted_at ASC
             LIMIT @limit
             """,
@@ -828,6 +1077,38 @@ sealed class TursoRelayStore : RelayStoreBase {
             ],
             cancellationToken);
 
+    public override Task RecordDirectContactAsync(string senderId, string recipientId, long nowMs, CancellationToken cancellationToken = default) =>
+        ExecuteNonQueryAsync(
+            """
+            INSERT OR REPLACE INTO contact_edges(owner_user_id, contact_user_id, updated_at)
+            VALUES (@owner_user_id, @contact_user_id, @updated_at)
+            """,
+            [
+                SqlArg.Text("owner_user_id", senderId),
+                SqlArg.Text("contact_user_id", recipientId),
+                SqlArg.Integer("updated_at", nowMs)
+            ],
+            cancellationToken);
+
+    public override async Task<bool> AreMutualContactsAsync(string userA, string userB, CancellationToken cancellationToken = default) {
+        var count = await ExecuteScalarLongAsync(
+            """
+            SELECT COUNT(*)
+            FROM contact_edges a
+            JOIN contact_edges b
+              ON a.owner_user_id = @user_a
+             AND a.contact_user_id = @user_b
+             AND b.owner_user_id = @user_b
+             AND b.contact_user_id = @user_a
+            """,
+            [
+                SqlArg.Text("user_a", userA),
+                SqlArg.Text("user_b", userB)
+            ],
+            cancellationToken);
+        return count > 0;
+    }
+
     Task ExecuteSequenceAsync(string sql, CancellationToken cancellationToken) =>
         ExecutePipelineAsync([new PipelineRequest("sequence", Sql: sql), new PipelineRequest("close")], cancellationToken);
 
@@ -879,6 +1160,16 @@ sealed class TursoRelayStore : RelayStoreBase {
         JsonElement element when element.ValueKind == JsonValueKind.String => element.GetString(),
         _ => Convert.ToString(value, CultureInfo.InvariantCulture)
     };
+
+    static bool SecureEquals(string a, string b) {
+        var left = Encoding.UTF8.GetBytes(a);
+        var right = Encoding.UTF8.GetBytes(b);
+        var match = left.Length == right.Length &&
+                    CryptographicOperations.FixedTimeEquals(left, right);
+        CryptographicOperations.ZeroMemory(left);
+        CryptographicOperations.ZeroMemory(right);
+        return match;
+    }
 }
 
 sealed class TursoSession : IAsyncDisposable {

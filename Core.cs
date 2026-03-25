@@ -4,6 +4,8 @@
 //  beyond Argon2id (for password hashing without character requirements).
 // ═══════════════════════════════════════════════════════════════════════════
 using System.IO;
+using System.Net.Http;
+using System.Net.Security;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -161,6 +163,17 @@ public static class Crypto {
         HKDF.Expand(HashAlgorithmName.SHA256, conversationKey, 32,
             Encoding.UTF8.GetBytes($"msg:{seqNum}"));
 
+    public static byte[] DeriveRatchetSeed(byte[] sharedSecret, string direction, string conversationId) =>
+        HKDF.Expand(HashAlgorithmName.SHA256, sharedSecret, 32,
+            Encoding.UTF8.GetBytes($"dm-ratchet:{direction}:{conversationId}"));
+
+    public static byte[] DeriveRatchetMessageKey(byte[] chainKey, long seqNum) =>
+        HKDF.Expand(HashAlgorithmName.SHA256, chainKey, 32,
+            Encoding.UTF8.GetBytes($"dm-msg:{seqNum}"));
+
+    public static byte[] DeriveRatchetNextChainKey(byte[] chainKey) =>
+        HKDF.Expand(HashAlgorithmName.SHA256, chainKey, 32, "dm-next"u8.ToArray());
+
     // ── Symmetric encryption (AES-256-GCM) ────────────────────────────────
 
     /// <summary>Encrypt with AES-256-GCM. Returns (ciphertext, nonce, tag).</summary>
@@ -264,10 +277,26 @@ public static class Crypto {
                 .Select(chunk => new string(chunk)));
     }
 
+    public static string ComputeGroupAuthToken(byte[] groupKey, string groupId) {
+        var info = Encoding.UTF8.GetBytes($"cipher:group-auth:{groupId}");
+        using var hmac = new HMACSHA256(groupKey);
+        var mac = hmac.ComputeHash(info);
+        return Convert.ToBase64String(mac)
+            .Replace("+", "-")
+            .Replace("/", "_")
+            .TrimEnd('=');
+    }
+
     static byte[] PackMessagePlaintext(string content) {
         var contentBytes = Encoding.UTF8.GetBytes(content);
         var payloadLength = 8 + contentBytes.Length;
-        var paddedLength = Math.Max(256, ((payloadLength + 255) / 256) * 256);
+        var paddedLength = 256;
+        while (paddedLength < payloadLength && paddedLength < 4096) {
+            paddedLength *= 2;
+        }
+        if (paddedLength < payloadLength) {
+            paddedLength = ((payloadLength + 4095) / 4096) * 4096;
+        }
         var packed = RandomNumberGenerator.GetBytes(paddedLength);
         PaddedMessageMagic.CopyTo(packed);
         BinaryPrimitives.WriteInt32LittleEndian(packed.AsSpan(4, 4), contentBytes.Length);
@@ -298,6 +327,10 @@ public static class Crypto {
     /// <summary>Encrypt a message for a DM conversation. Returns wire payload JSON.</summary>
     public static string EncryptDm(byte[] conversationKey, Message msg) {
         var msgKey = DeriveMessageKey(conversationKey, msg.SeqNum);
+        return EncryptDmWithMessageKey(msgKey, msg);
+    }
+
+    public static string EncryptDmWithMessageKey(byte[] msgKey, Message msg) {
         var plain = PackMessagePlaintext(msg.Content);
         var (ct, nonce, tag) = Encrypt(msgKey, plain);
         var wire = new WireMessage(
@@ -317,6 +350,15 @@ public static class Crypto {
             if (!HasRequiredWireFields(wire, "dm")) return null;
             var frame = wire!;
             var msgKey = DeriveMessageKey(conversationKey, frame.SeqNum);
+            return DecryptDmWithMessageKey(msgKey, senderId, payload, isMine);
+        } catch { return null; }
+    }
+
+    public static Message? DecryptDmWithMessageKey(byte[] msgKey, string senderId, string payload, bool isMine = false) {
+        try {
+            var wire = JsonSerializer.Deserialize<WireMessage>(payload, JsonOpts);
+            if (!HasRequiredWireFields(wire, "dm")) return null;
+            var frame = wire!;
             var plain = Decrypt(msgKey,
                 Convert.FromBase64String(frame.Ciphertext),
                 Convert.FromBase64String(frame.Nonce),
@@ -392,8 +434,13 @@ public partial class Vault : IDisposable {
     SqliteConnection? _db;
     readonly object _gate = new();
     byte[] _key = [];
+    GCHandle _keyHandle;
     string _path = "";
     bool _disposed;
+    // When true, ReadEncryptedOrLegacyString falls back to the unencrypted legacy
+    // column if decryption fails. Enable only during an explicit migration pass,
+    // then disable immediately. Default is false (fail closed).
+    bool _legacyMigrationMode;
 
     public static string DefaultVaultPath =>
         Path.Combine(AppPaths.AppDataRoot, "vault.db");
@@ -408,7 +455,7 @@ public partial class Vault : IDisposable {
     public void Open(string path, byte[] vaultKey) {
         lock (_gate) {
             _path = path;
-            _key = vaultKey.ToArray();
+            SetKey(vaultKey);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             _db = new SqliteConnection($"Data Source={path};Pooling=False;");
             try {
@@ -421,8 +468,7 @@ public partial class Vault : IDisposable {
                 _db?.Dispose();
                 _db = null;
                 IsOpen = false;
-                Crypto.Wipe(_key);
-                _key = [];
+                WipeAndReleaseKey();
                 throw;
             }
         }
@@ -447,6 +493,10 @@ public partial class Vault : IDisposable {
                 sign_pub TEXT NOT NULL,
                 dh_pub TEXT NOT NULL,
                 conversation_id TEXT NOT NULL,
+                sign_pub_enc BLOB,
+                dh_pub_enc BLOB,
+                conversation_id_enc BLOB,
+                conversation_id_hmac TEXT,
                 added_at INTEGER NOT NULL,
                 last_seen INTEGER DEFAULT 0,
                 is_verified INTEGER NOT NULL DEFAULT 0,
@@ -470,6 +520,10 @@ public partial class Vault : IDisposable {
                 sender_id TEXT NOT NULL,
                 content_enc BLOB NOT NULL,
                 timestamp INTEGER NOT NULL,
+                conversation_id_enc BLOB,
+                conversation_id_hmac TEXT,
+                sender_id_enc BLOB,
+                timestamp_enc BLOB,
                 seq_num INTEGER NOT NULL,
                 is_mine INTEGER NOT NULL DEFAULT 0,
                 status INTEGER NOT NULL DEFAULT 1,
@@ -478,7 +532,7 @@ public partial class Vault : IDisposable {
                 payload_enc BLOB,
                 sig_enc TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id_hmac, id);
             CREATE TABLE IF NOT EXISTS message_receipts (
                 message_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
@@ -496,6 +550,7 @@ public partial class Vault : IDisposable {
                 conversation_id TEXT NOT NULL,
                 sender_id TEXT NOT NULL,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                chain_key_enc BLOB,
                 PRIMARY KEY (conversation_id, sender_id)
             );
             CREATE TABLE IF NOT EXISTS settings (
@@ -510,6 +565,8 @@ public partial class Vault : IDisposable {
                 seq_num INTEGER NOT NULL,
                 conv_type INTEGER NOT NULL DEFAULT 0,
                 group_id TEXT,
+                group_id_enc BLOB,
+                group_id_hmac TEXT,
                 member_ids_enc BLOB,
                 created_at INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0
@@ -579,15 +636,17 @@ public partial class Vault : IDisposable {
 
     public void SaveContact(Contact c) {
         lock (_gate) {
+            var conversationId = c.ConversationId ?? "";
             ExecParam(@"
                 INSERT OR REPLACE INTO contacts
-                (user_id, display_name_enc, sign_pub, dh_pub, conversation_id, added_at, last_seen, is_verified, pending_sign_pub, pending_dh_pub, key_changed_at)
-                VALUES (@uid, @name, @sp, @dp, @conv, @ts, @ls, @verified, @psp, @pdp, @changed)",
+                (user_id, display_name_enc, sign_pub, dh_pub, conversation_id, sign_pub_enc, dh_pub_enc, conversation_id_enc, conversation_id_hmac, added_at, last_seen, is_verified, pending_sign_pub, pending_dh_pub, key_changed_at)
+                VALUES (@uid, @name, '', '', '', @spEnc, @dpEnc, @convEnc, @convHmac, @ts, @ls, @verified, @psp, @pdp, @changed)",
                 ("uid", c.UserId),
                 ("name", Crypto.EncryptStr(_key, c.DisplayName)),
-                ("sp", Convert.ToBase64String(c.SignPubKey)),
-                ("dp", Convert.ToBase64String(c.DhPubKey)),
-                ("conv", c.ConversationId ?? ""),
+                ("spEnc", Crypto.EncryptStr(_key, Convert.ToBase64String(c.SignPubKey))),
+                ("dpEnc", Crypto.EncryptStr(_key, Convert.ToBase64String(c.DhPubKey))),
+                ("convEnc", Crypto.EncryptStr(_key, conversationId)),
+                ("convHmac", ComputeMetadataIndex("contact-conversation", conversationId)),
                 ("ts", c.AddedAt),
                 ("ls", c.LastSeen),
                 ("verified", c.IsVerified ? 1 : 0),
@@ -605,16 +664,19 @@ public partial class Vault : IDisposable {
             using var r = cmd.ExecuteReader();
             while (r.Read()) {
                 var nameEnc = (byte[])r["display_name_enc"];
+                var signPubBase64 = ReadEncryptedOrLegacyString(r, "sign_pub_enc", "sign_pub", $"contact:{TryReadString(r, "user_id")}");
+                var dhPubBase64 = ReadEncryptedOrLegacyString(r, "dh_pub_enc", "dh_pub", $"contact:{TryReadString(r, "user_id")}");
+                var conversationId = ReadEncryptedOrLegacyString(r, "conversation_id_enc", "conversation_id", $"contact:{TryReadString(r, "user_id")}");
                 list.Add(new Contact {
                     UserId = r.GetString(r.GetOrdinal("user_id")),
                     DisplayName = Crypto.DecryptStr(_key, nameEnc) ?? "???",
-                    SignPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("sign_pub"))),
-                    DhPubKey = Convert.FromBase64String(r.GetString(r.GetOrdinal("dh_pub"))),
+                    SignPubKey = Convert.FromBase64String(signPubBase64),
+                    DhPubKey = Convert.FromBase64String(dhPubBase64),
                     PendingSignPubKey = ReadOptionalBase64(r, "pending_sign_pub"),
                     PendingDhPubKey = ReadOptionalBase64(r, "pending_dh_pub"),
                     IsVerified = TryGetInt32(r, "is_verified") == 1,
                     KeyChangedAt = TryGetInt64(r, "key_changed_at"),
-                    ConversationId = r.GetString(r.GetOrdinal("conversation_id")),
+                    ConversationId = conversationId,
                     AddedAt = r.GetInt64(r.GetOrdinal("added_at")),
                     LastSeen = TryGetInt64(r, "last_seen")
                 });
@@ -678,17 +740,18 @@ public partial class Vault : IDisposable {
 
     public void DeleteGroupConversation(string groupId) {
         lock (_gate) {
+            var groupHmac = ComputeMetadataIndex("message-conversation", groupId);
             using var tx = _db!.BeginTransaction(deferred: false);
             ExecParamTx(tx, @"
                 DELETE FROM message_receipts
                 WHERE message_id IN (
-                    SELECT id FROM messages WHERE conversation_id=@gid
+                    SELECT id FROM messages WHERE conversation_id_hmac=@gid
                 )",
-                ("gid", groupId));
-            ExecParamTx(tx, "DELETE FROM messages WHERE conversation_id=@gid", ("gid", groupId));
+                ("gid", groupHmac));
+            ExecParamTx(tx, "DELETE FROM messages WHERE conversation_id_hmac=@gid", ("gid", groupHmac));
             ExecParamTx(tx, "DELETE FROM conv_state WHERE conversation_id=@gid", ("gid", groupId));
-            ExecParamTx(tx, "DELETE FROM outbox WHERE conv_type=@ctype AND group_id=@gid",
-                ("ctype", (int)ConversationType.Group), ("gid", groupId));
+            ExecParamTx(tx, "DELETE FROM outbox WHERE conv_type=@ctype AND group_id_hmac=@gid",
+                ("ctype", (int)ConversationType.Group), ("gid", ComputeMetadataIndex("outbox-group", groupId)));
             ExecParamTx(tx, "DELETE FROM groups WHERE group_id=@gid", ("gid", groupId));
             tx.Commit();
         }
@@ -699,12 +762,19 @@ public partial class Vault : IDisposable {
     public void SaveMessage(Message msg) {
         lock (_gate) {
             var contentEnc = Crypto.EncryptStr(_key, msg.Content);
+            var convId = msg.ConversationId;
+            var senderId = msg.SenderId;
             ExecParam(@"INSERT OR REPLACE INTO messages
-                (id, conversation_id, sender_id, content_enc, timestamp,
+                (id, conversation_id, sender_id, content_enc, timestamp, conversation_id_enc, conversation_id_hmac, sender_id_enc, timestamp_enc,
                  seq_num, is_mine, status, conv_type, recipient_id)
-                VALUES (@id,@conv,@sid,@ct,@ts,@seq,@mine,@st,@ctype,@rid)",
-                ("id", msg.Id), ("conv", msg.ConversationId), ("sid", msg.SenderId),
-                ("ct", contentEnc), ("ts", msg.Timestamp), ("seq", msg.SeqNum),
+                VALUES (@id,'','',@ct,0,@convEnc,@convHmac,@sidEnc,@tsEnc,@seq,@mine,@st,@ctype,@rid)",
+                ("id", msg.Id),
+                ("convEnc", Crypto.EncryptStr(_key, convId)),
+                ("convHmac", ComputeMetadataIndex("message-conversation", convId)),
+                ("sidEnc", Crypto.EncryptStr(_key, senderId)),
+                ("ct", contentEnc),
+                ("tsEnc", Crypto.EncryptField(_key, BitConverter.GetBytes(msg.Timestamp))),
+                ("seq", msg.SeqNum),
                 ("mine", msg.IsMine ? 1 : 0), ("st", (int)msg.Status),
                 ("ctype", (int)msg.ConvType), ("rid", (object?)msg.RecipientId ?? DBNull.Value));
         }
@@ -718,25 +788,37 @@ public partial class Vault : IDisposable {
     public List<Message> LoadMessages(string conversationId, int offset, int limit = 50) {
         lock (_gate) {
             var list = new List<Message>();
+            var convHmac = ComputeMetadataIndex("message-conversation", conversationId);
             using var cmd = _db!.CreateCommand();
             cmd.CommandText = @"
                 SELECT * FROM messages
-                WHERE conversation_id=@conv
-                ORDER BY timestamp DESC, seq_num DESC, id DESC
+                WHERE conversation_id_hmac=@conv
+                ORDER BY rowid DESC
                 LIMIT @limit OFFSET @offset";
-            cmd.Parameters.AddWithValue("conv", conversationId);
+            cmd.Parameters.AddWithValue("conv", convHmac);
             cmd.Parameters.AddWithValue("limit", limit);
             cmd.Parameters.AddWithValue("offset", offset);
             using var r = cmd.ExecuteReader();
             while (r.Read()) {
                 var ctEnc = (byte[])r["content_enc"];
                 var content = Crypto.DecryptStr(_key, ctEnc) ?? "[decrypt failed]";
+                var convId = ReadEncryptedOrLegacyString(r, "conversation_id_enc", "conversation_id", $"msg:{TryReadString(r, "id")}");
+                var senderId = ReadEncryptedOrLegacyString(r, "sender_id_enc", "sender_id", $"msg:{TryReadString(r, "id")}");
+                long timestamp;
+                if (!r.IsDBNull(r.GetOrdinal("timestamp_enc"))) {
+                    var tsBytes = Crypto.DecryptField(_key, (byte[])r["timestamp_enc"]);
+                    timestamp = tsBytes != null && tsBytes.Length == sizeof(long)
+                        ? BitConverter.ToInt64(tsBytes, 0)
+                        : 0;
+                } else {
+                    timestamp = r.GetInt64(r.GetOrdinal("timestamp"));
+                }
                 list.Add(new Message {
                     Id = r.GetString(r.GetOrdinal("id")),
-                    ConversationId = r.GetString(r.GetOrdinal("conversation_id")),
-                    SenderId = r.GetString(r.GetOrdinal("sender_id")),
+                    ConversationId = convId,
+                    SenderId = senderId,
                     Content = content,
-                    Timestamp = r.GetInt64(r.GetOrdinal("timestamp")),
+                    Timestamp = timestamp,
                     SeqNum = r.GetInt64(r.GetOrdinal("seq_num")),
                     IsMine = r.GetInt32(r.GetOrdinal("is_mine")) == 1,
                     Status = (MessageStatus)r.GetInt32(r.GetOrdinal("status")),
@@ -751,8 +833,8 @@ public partial class Vault : IDisposable {
     public int GetMessageCount(string conversationId) {
         lock (_gate) {
             using var cmd = _db!.CreateCommand();
-            cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE conversation_id=@conv";
-            cmd.Parameters.AddWithValue("conv", conversationId);
+            cmd.CommandText = "SELECT COUNT(*) FROM messages WHERE conversation_id_hmac=@conv";
+            cmd.Parameters.AddWithValue("conv", ComputeMetadataIndex("message-conversation", conversationId));
             return Convert.ToInt32(cmd.ExecuteScalar());
         }
     }
@@ -781,7 +863,7 @@ public partial class Vault : IDisposable {
         lock (_gate) {
             using var cmd = _db!.CreateCommand();
             cmd.CommandText = """
-                SELECT conversation_id, conv_type, is_mine
+                SELECT conversation_id_enc, conversation_id, conv_type, is_mine
                 FROM messages
                 WHERE id=@id
                 LIMIT 1
@@ -789,8 +871,9 @@ public partial class Vault : IDisposable {
             cmd.Parameters.AddWithValue("id", messageId);
             using var r = cmd.ExecuteReader();
             if (!r.Read()) return null;
+            var conversationId = ReadEncryptedOrLegacyString(r, "conversation_id_enc", "conversation_id", $"msg:{messageId}");
             return (
-                r.GetString(r.GetOrdinal("conversation_id")),
+                conversationId,
                 (ConversationType)r.GetInt32(r.GetOrdinal("conv_type")),
                 r.GetInt32(r.GetOrdinal("is_mine")) == 1
             );
@@ -929,6 +1012,51 @@ public partial class Vault : IDisposable {
             ("sender", senderId),
             ("seq", lastSeq));
 
+    public (long seq, byte[] messageKey)? AllocateOutgoingDmMessageKey(string convId, byte[] sharedSecret) {
+        lock (_gate) {
+            using var tx = _db!.BeginTransaction(deferred: false);
+            var (lastSeq, chainKey) = LoadConvStateCore(tx, convId);
+            chainKey ??= Crypto.DeriveRatchetSeed(sharedSecret, "send", convId);
+            var nextSeq = lastSeq + 1;
+            var messageKey = Crypto.DeriveRatchetMessageKey(chainKey, nextSeq);
+            var nextChain = Crypto.DeriveRatchetNextChainKey(chainKey);
+            SaveConvStateCore(tx, convId, nextSeq, nextChain);
+            tx.Commit();
+            Crypto.Wipe(chainKey);
+            return (nextSeq, messageKey);
+        }
+    }
+
+    public byte[]? ConsumeIncomingDmMessageKey(string convId, string senderId, long seq, byte[] sharedSecret) {
+        lock (_gate) {
+            using var tx = _db!.BeginTransaction(deferred: false);
+            var (lastSeq, chainKey) = LoadIncomingChainStateCore(tx, convId, senderId);
+            if (seq <= lastSeq) {
+                if (chainKey != null) Crypto.Wipe(chainKey);
+                return null;
+            }
+
+            chainKey ??= Crypto.DeriveRatchetSeed(sharedSecret, $"recv:{senderId}", convId);
+            byte[]? messageKey = null;
+            for (var step = lastSeq + 1; step <= seq; step++) {
+                var stepKey = Crypto.DeriveRatchetMessageKey(chainKey, step);
+                var nextChain = Crypto.DeriveRatchetNextChainKey(chainKey);
+                Crypto.Wipe(chainKey);
+                chainKey = nextChain;
+                if (step == seq) {
+                    messageKey = stepKey;
+                } else {
+                    Crypto.Wipe(stepKey);
+                }
+            }
+
+            SaveIncomingChainStateCore(tx, convId, senderId, seq, chainKey);
+            tx.Commit();
+            Crypto.Wipe(chainKey);
+            return messageKey;
+        }
+    }
+
     public long NextSeqNum(string convId) {
         lock (_gate) {
             using var tx = _db!.BeginTransaction(deferred: false);
@@ -949,6 +1077,52 @@ public partial class Vault : IDisposable {
         }
     }
 
+    (long lastSeq, byte[]? chainKey) LoadIncomingChainStateCore(SqliteTransaction? transaction, string convId, string senderId) {
+        using var cmd = _db!.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = """
+            SELECT last_seq, chain_key_enc
+            FROM incoming_seq_state
+            WHERE conversation_id=@conv AND sender_id=@sender
+            LIMIT 1
+            """;
+        cmd.Parameters.AddWithValue("@conv", convId);
+        cmd.Parameters.AddWithValue("@sender", senderId);
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read()) return (0, null);
+
+        var lastSeq = reader.GetInt64(0);
+        byte[]? chainKey = null;
+        if (!reader.IsDBNull(1)) {
+            chainKey = Crypto.DecryptField(_key, (byte[])reader.GetValue(1));
+        }
+        return (lastSeq, chainKey);
+    }
+
+    void SaveIncomingChainStateCore(SqliteTransaction? transaction, string convId, string senderId, long lastSeq, byte[] chainKey) {
+        var chainEnc = Crypto.EncryptField(_key, chainKey);
+        using var cmd = _db!.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = """
+            INSERT INTO incoming_seq_state(conversation_id, sender_id, last_seq, chain_key_enc)
+            VALUES (@conv, @sender, @seq, @chain)
+            ON CONFLICT(conversation_id, sender_id) DO UPDATE SET
+                last_seq = CASE
+                    WHEN excluded.last_seq > incoming_seq_state.last_seq THEN excluded.last_seq
+                    ELSE incoming_seq_state.last_seq
+                END,
+                chain_key_enc = CASE
+                    WHEN excluded.last_seq > incoming_seq_state.last_seq THEN excluded.chain_key_enc
+                    ELSE incoming_seq_state.chain_key_enc
+                END
+            """;
+        cmd.Parameters.AddWithValue("@conv", convId);
+        cmd.Parameters.AddWithValue("@sender", senderId);
+        cmd.Parameters.AddWithValue("@seq", lastSeq);
+        cmd.Parameters.AddWithValue("@chain", chainEnc);
+        cmd.ExecuteNonQuery();
+    }
+
     // ── Outbox (reliable delivery even across server restarts) ─────────────
 
     public void EnqueueOutbox(string id, string recipientId, string payload, string sig,
@@ -964,15 +1138,16 @@ public partial class Vault : IDisposable {
 
             ExecParam(@"
                 INSERT OR REPLACE INTO outbox
-                (id, recipient_id_enc, payload_enc, sig_enc, seq_num, conv_type, group_id, member_ids_enc, created_at, attempts)
-                VALUES (@id, @rid, @pl, @sig, @seq, @ct, @gid, @mids, @ts, 0)",
+                (id, recipient_id_enc, payload_enc, sig_enc, seq_num, conv_type, group_id, group_id_enc, group_id_hmac, member_ids_enc, created_at, attempts)
+                VALUES (@id, @rid, @pl, @sig, @seq, @ct, '', @gidEnc, @gidHmac, @mids, @ts, 0)",
                 ("id", id),
                 ("rid", recipientIdEnc),
                 ("pl", payloadEnc),
                 ("sig", sigEnc),
                 ("seq", seqNum),
                 ("ct", (int)ctype),
-                ("gid", (object?)groupId ?? DBNull.Value),
+                ("gidEnc", groupId != null ? Crypto.EncryptStr(_key, groupId) : DBNull.Value),
+                ("gidHmac", groupId != null ? ComputeMetadataIndex("outbox-group", groupId) : DBNull.Value),
                 ("mids", (object?)memberIdsEnc ?? DBNull.Value),
                 ("ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
         }
@@ -1007,7 +1182,7 @@ public partial class Vault : IDisposable {
                     sig,
                     r.GetInt64(r.GetOrdinal("seq_num")),
                     (ConversationType)r.GetInt32(r.GetOrdinal("conv_type")),
-                    r.IsDBNull(r.GetOrdinal("group_id")) ? null : r.GetString(r.GetOrdinal("group_id")),
+                    NormalizeOptional(ReadEncryptedOrLegacyString(r, "group_id_enc", "group_id", $"outbox:{id}")),
                     midsRaw?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
                 ));
             }
@@ -1023,15 +1198,26 @@ public partial class Vault : IDisposable {
 
     // ── Settings ───────────────────────────────────────────────────────────
 
-    public void SetSetting(string key, string value) =>
-        ExecParam("INSERT OR REPLACE INTO settings VALUES (@k,@v)", ("k", key), ("v", value));
+    public void SetSetting(string key, string value) {
+        var enc = Crypto.EncryptStr(_key, value);
+        var packed = Convert.ToBase64String(enc);
+        ExecParam("INSERT OR REPLACE INTO settings VALUES (@k,@v)", ("k", key), ("v", packed));
+    }
 
     public string? GetSetting(string key) {
         lock (_gate) {
             using var cmd = _db!.CreateCommand();
             cmd.CommandText = "SELECT value FROM settings WHERE key=@k";
             cmd.Parameters.AddWithValue("k", key);
-            return cmd.ExecuteScalar() as string;
+            var raw = cmd.ExecuteScalar() as string;
+            if (string.IsNullOrWhiteSpace(raw)) return raw;
+            try {
+                var enc = Convert.FromBase64String(raw);
+                return Crypto.DecryptStr(_key, enc);
+            } catch {
+                // Legacy plaintext fallback. Callers may rewrite to encrypted on next save.
+                return raw;
+            }
         }
     }
 
@@ -1043,6 +1229,14 @@ public partial class Vault : IDisposable {
     /// 2. Overwrite SQLite files with random bytes x3 passes where possible
     /// 3. Delete file
     /// 4. Wipe vault key from memory
+    ///
+    /// NOTE ON SSDs: 3-pass overwrite is effective on HDDs and many SSD/NVMe
+    /// configurations, but SSDs with wear-leveling may retain data in unmapped
+    /// blocks that the OS cannot address — this is a hardware-level limitation.
+    /// Full-disk encryption (BitLocker / FileVault) is the only reliable
+    /// mitigation on SSDs, because the plaintext data is never written to disk
+    /// unencrypted in the first place. This method remains worthwhile as
+    /// defense-in-depth and handles the HDD / non-encrypted-drive case correctly.
     /// </summary>
     public void Nuke() {
         lock (_gate) {
@@ -1050,8 +1244,7 @@ public partial class Vault : IDisposable {
             _db?.Close();
             _db?.Dispose();
             _db = null;
-            if (_key.Length > 0) Crypto.Wipe(_key);
-            _key = [];
+            WipeAndReleaseKey();
         }
 
         GC.Collect();
@@ -1151,6 +1344,15 @@ public partial class Vault : IDisposable {
         }
     }
 
+    static string TryReadString(SqliteDataReader reader, string column) {
+        try {
+            var ordinal = reader.GetOrdinal(column);
+            return reader.IsDBNull(ordinal) ? "" : reader.GetString(ordinal);
+        } catch {
+            return "";
+        }
+    }
+
     static string TryGetString(SqliteDataReader reader, string column) {
         try {
             var ordinal = reader.GetOrdinal(column);
@@ -1160,15 +1362,22 @@ public partial class Vault : IDisposable {
         }
     }
 
+    /// <summary>
+    /// Enable legacy plaintext fallback during a one-time migration pass.
+    /// Call EnableLegacyMigration(), run migration, then call DisableLegacyMigration().
+    /// Never leave this enabled during normal operation.
+    /// </summary>
+    public void EnableLegacyMigration() { lock (_gate) { _legacyMigrationMode = true; } }
+
+    /// <summary>Disable legacy plaintext fallback. Call after migration is complete.</summary>
+    public void DisableLegacyMigration() { lock (_gate) { _legacyMigrationMode = false; } }
+
     string ReadEncryptedOrLegacyString(SqliteDataReader reader, string encryptedColumn, string legacyColumn, string? recordId = null) {
         try {
             var encOrdinal = reader.GetOrdinal(encryptedColumn);
             if (!reader.IsDBNull(encOrdinal)) {
                 var decrypted = Crypto.DecryptStr(_key, (byte[])reader[encryptedColumn]);
-                if (decrypted != null) {
-                    return decrypted;
-                }
-
+                if (decrypted != null) return decrypted;
                 AppLog.Warn("vault", $"failed to decrypt {encryptedColumn} for {recordId ?? "record"}");
             }
         } catch (IndexOutOfRangeException) {
@@ -1176,19 +1385,55 @@ public partial class Vault : IDisposable {
             AppLog.Warn("vault", $"invalid storage type for {encryptedColumn} on {recordId ?? "record"}: {ex.Message}");
         }
 
-        return TryGetString(reader, legacyColumn);
+        if (_legacyMigrationMode) {
+            AppLog.Warn("vault", $"[migration] falling back to legacy plaintext for {encryptedColumn} on {recordId ?? "record"}");
+            return TryGetString(reader, legacyColumn);
+        }
+
+        // Fail closed: return empty string rather than silently serving unencrypted data.
+        AppLog.Error("vault", $"decryption failed for {encryptedColumn} on {recordId ?? "record"} — returning empty (legacy migration is disabled)");
+        return "";
     }
 
     string ReadEncryptedOrLegacyCsv(SqliteDataReader reader, string encryptedColumn, string legacyColumn, string? recordId = null) =>
         ReadEncryptedOrLegacyString(reader, encryptedColumn, legacyColumn, recordId);
+
+    static string? NormalizeOptional(string value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
+
+    string ComputeMetadataIndex(string scope, string value) {
+        using var hmac = new HMACSHA256(_key);
+        var bytes = Encoding.UTF8.GetBytes($"{scope}:{value}");
+        var mac = hmac.ComputeHash(bytes);
+        return Convert.ToBase64String(mac)
+            .Replace("+", "-")
+            .Replace("/", "_")
+            .TrimEnd('=');
+    }
 
     public void Dispose() {
         lock (_gate) {
             if (_disposed) return;
             _disposed = true;
             _db?.Dispose();
-            if (_key.Length > 0) Crypto.Wipe(_key);
+            WipeAndReleaseKey();
         }
+    }
+
+    void SetKey(byte[] key) {
+        WipeAndReleaseKey();
+        _key = key.ToArray();
+        _keyHandle = GCHandle.Alloc(_key, GCHandleType.Pinned);
+    }
+
+    void WipeAndReleaseKey() {
+        if (_key.Length > 0) {
+            Crypto.Wipe(_key);
+        }
+        if (_keyHandle.IsAllocated) {
+            _keyHandle.Free();
+        }
+        _key = [];
     }
 }
 
@@ -1214,7 +1459,7 @@ public static class Session {
     public static void Save(byte[] vaultKey) {
         Directory.CreateDirectory(Path.GetDirectoryName(SessionFile)!);
         var protected_ = System.Security.Cryptography.ProtectedData.Protect(
-            vaultKey, null,
+            vaultKey, GetDpapiEntropy(),
             System.Security.Cryptography.DataProtectionScope.CurrentUser);
         File.WriteAllBytes(SessionFile, protected_);
     }
@@ -1224,13 +1469,54 @@ public static class Session {
         if (!File.Exists(SessionFile)) return null;
         try {
             var encrypted = File.ReadAllBytes(SessionFile);
-            return System.Security.Cryptography.ProtectedData.Unprotect(
-                encrypted, null,
-                System.Security.Cryptography.DataProtectionScope.CurrentUser);
+            var entropy = GetDpapiEntropy();
+            try {
+                // Normal path: session was saved with app-bound entropy.
+                return System.Security.Cryptography.ProtectedData.Unprotect(
+                    encrypted, entropy,
+                    System.Security.Cryptography.DataProtectionScope.CurrentUser);
+            } catch (System.Security.Cryptography.CryptographicException) {
+                // Migration path: session was saved with the old null-entropy scheme.
+                // Decrypt with null, then immediately re-save with the new entropy so
+                // this migration only happens once. No password prompt required.
+                AppLog.Info("session", "migrating session to app-bound DPAPI entropy");
+                var key = System.Security.Cryptography.ProtectedData.Unprotect(
+                    encrypted, null,
+                    System.Security.Cryptography.DataProtectionScope.CurrentUser);
+                Save(key);
+                return key;
+            }
         } catch (Exception ex) {
             AppLog.Warn("session", $"saved session could not be restored: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Application-specific entropy for DPAPI. Binds the session blob to this app
+    /// so other processes running as the same Windows user cannot trivially decrypt it.
+    /// Derived from the assembly identity — stable across updates.
+    /// </summary>
+    static byte[] GetDpapiEntropy() {
+        var token = typeof(Session).Assembly.GetName().GetPublicKeyToken();
+        var tag = "cipher:session:v1"u8.ToArray();
+        if (token is { Length: > 0 }) {
+            var combined = new byte[tag.Length + token.Length];
+            tag.CopyTo(combined, 0);
+            token.CopyTo(combined, tag.Length);
+            return SHA256.HashData(combined);
+        }
+
+        // Unsigned builds fallback: bind entropy to this machine/user/executable path.
+        // This is still not as strong as signed-assembly binding, but avoids a global constant.
+        var machine = Environment.MachineName;
+        var user = Environment.UserName;
+        var exePath = AppContext.BaseDirectory;
+        var fallback = Encoding.UTF8.GetBytes($"{machine}|{user}|{exePath}");
+        var all = new byte[tag.Length + fallback.Length];
+        tag.CopyTo(all, 0);
+        fallback.CopyTo(all, tag.Length);
+        return SHA256.HashData(all);
     }
 
     /// <summary>Clear the saved session (called on logout and nuke).</summary>
@@ -1315,8 +1601,40 @@ public class NetworkClient : IAsyncDisposable {
         }
         _lastRegisteredConnectionId = null;
 
+        var pinnedThumb = RelayPinning.ResolvePinnedThumbprint(serverUrl);
+        if (string.Equals(
+                AppBranding.ResolveRelayUrl(null),
+                AppBranding.ResolveRelayUrl(serverUrl),
+                StringComparison.OrdinalIgnoreCase) &&
+            string.IsNullOrWhiteSpace(pinnedThumb)) {
+            throw new InvalidOperationException(
+                "Certificate pinning is required for the default relay. " +
+                $"Set {RelayPinning.RelayThumbprintEnvVar} or RelayPinning.PinnedThumbprint.");
+        }
         _hub = new HubConnectionBuilder()
-            .WithUrl(hubUrl)
+            .WithUrl(hubUrl, options => {
+                // Certificate pinning: only active when PinnedThumbprint is set.
+                // Leave RelayPinning.PinnedThumbprint = null to disable (default).
+                if (!string.IsNullOrWhiteSpace(pinnedThumb)) {
+                    options.HttpMessageHandlerFactory = _ => new HttpClientHandler {
+                        ServerCertificateCustomValidationCallback = (_, cert, _, sslErrors) => {
+                            // Require a clean chain first — no expired / untrusted certs.
+                            if (sslErrors != SslPolicyErrors.None) return false;
+                            if (cert == null) return false;
+                            // Then verify the leaf certificate matches our pinned thumbprint.
+                            var thumb = cert.GetCertHashString(HashAlgorithmName.SHA256);
+                            var match = string.Equals(thumb, pinnedThumb, StringComparison.OrdinalIgnoreCase);
+                            if (!match) {
+                                AppLog.Error("relay",
+                                    $"TLS certificate pinning failure — expected={pinnedThumb[..8]}... got={thumb[..8]}... " +
+                                    "Connection rejected. If the relay cert was legitimately renewed, " +
+                                    "update RelayPinning.PinnedThumbprint and redeploy.");
+                            }
+                            return match;
+                        }
+                    };
+                }
+            })
             .WithAutomaticReconnect(new[] {
                 TimeSpan.Zero,
                 TimeSpan.FromSeconds(2),
@@ -1434,11 +1752,11 @@ public class NetworkClient : IAsyncDisposable {
 
     /// <summary>Send encrypted message to a group.</summary>
     public async Task<bool> SendGroupAsync(string groupId, List<string> recipientIds,
-        string payload, string sig, long seqNum) {
+        string payload, string sig, long seqNum, string authToken) {
         if (!IsConnected) return false;
         var started = AppTelemetry.StartTimer();
         try {
-            await _hub!.InvokeAsync("SendGroup", groupId, recipientIds, payload, sig, seqNum);
+            await _hub!.InvokeAsync("SendGroup", groupId, recipientIds, payload, sig, seqNum, authToken);
             AppLog.Info("relay", $"group relay send ok group={AppTelemetry.MaskUserId(groupId)} seq={seqNum} recipients={recipientIds.Count} bytes={payload.Length} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
             return true;
         } catch (Exception ex) {
@@ -1453,7 +1771,10 @@ public class NetworkClient : IAsyncDisposable {
         if (!IsConnected) return null;
         var started = AppTelemetry.StartTimer();
         try {
-            var result = await _hub!.InvokeAsync<KeyBundleDto?>("GetKeys", userId);
+            if (_user == null) return null;
+            var challenge = await _hub!.InvokeAsync<string>("RequestKeyLookupChallenge");
+            var challengeSig = Crypto.Sign(_user.SignPrivKey, $"{_user.UserId}:{userId}:{challenge}");
+            var result = await _hub!.InvokeAsync<KeyBundleDto?>("GetKeys", userId, challenge, challengeSig);
             if (result == null) {
                 AppLog.Warn("relay", $"key lookup miss for {AppTelemetry.MaskUserId(userId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");
                 return null;
@@ -1693,8 +2014,13 @@ public class NetworkClient : IAsyncDisposable {
     }
 
     static string? NormalizePublicDisplayName(string? displayName) {
-        var trimmed = (displayName ?? "").Trim();
-        return trimmed.Length == 0 ? null : trimmed;
+        var normalized = (displayName ?? "").Trim().Normalize(NormalizationForm.FormC);
+        if (normalized.Length == 0) return null;
+        var filtered = new string(normalized.Where(ch =>
+            ch is not '\u200E' and not '\u200F' &&
+            !(ch >= '\u202A' && ch <= '\u202E') &&
+            !(ch >= '\u2066' && ch <= '\u2069')).ToArray());
+        return filtered.Length == 0 ? null : filtered;
     }
 
     record KeyBundleDto(
@@ -1704,4 +2030,3 @@ public class NetworkClient : IAsyncDisposable {
         [property: JsonPropertyName("registeredAt")] long RegisteredAt,
         [property: JsonPropertyName("displayName")] string? DisplayName = null);
 }
-

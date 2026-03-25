@@ -87,9 +87,9 @@ public static class AppRuntime {
                 case "--test-register-name":
                     testRegisterName = ReadValue(args, ref i, inlineValue)?.Trim();
                     break;
-                case "--test-register-password":
-                    testRegisterPassword = ReadValue(args, ref i, inlineValue);
-                    break;
+                // "--test-register-password" CLI arg intentionally removed.
+                // Passwords in process args are visible to all users via WMI / Task Manager.
+                // Use the CIPHER_TEST_REGISTER_PASSWORD environment variable instead.
                 case "--test-auto-register":
                     autoRegister = true;
                     break;
@@ -117,6 +117,23 @@ public static class AppRuntime {
         if (!string.IsNullOrWhiteSpace(Current.SignalFile)) {
             Directory.CreateDirectory(Path.GetDirectoryName(Current.SignalFile!)!);
         }
+
+#if !DEBUG
+        if (!string.IsNullOrWhiteSpace(Current.RelayUrlOverride)) {
+            AppLog.Warn("runtime", "RelayUrlOverride was set in a release build and has been ignored");
+            Current = Current with { RelayUrlOverride = null };
+        }
+        // In release builds, test credentials must never be active.
+        // Clear them defensively even if somehow set via environment variable.
+        if (!string.IsNullOrWhiteSpace(Current.TestRegisterPassword)) {
+            AppLog.Warn("runtime", "TestRegisterPassword was set in a release build — cleared for safety");
+            Current = Current with { TestRegisterPassword = null };
+        }
+        if (Current.AutoRegister || Current.AutoLogin) {
+            AppLog.Warn("runtime", "AutoRegister/AutoLogin flags are not permitted in release builds — cleared");
+            Current = Current with { AutoRegister = false, AutoLogin = false };
+        }
+#endif
     }
 
     public static void ApplyStartupDelayIfConfigured() {

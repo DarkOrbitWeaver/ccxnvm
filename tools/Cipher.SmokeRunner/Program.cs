@@ -130,8 +130,9 @@ static async Task OfflineGroupDeliveryAsync(string serverUrl) {
     };
     var payload = Crypto.EncryptGroup(groupKey, message);
     var sig = Crypto.SignPayload(alice.SignPrivKey, payload, message.SeqNum);
+    var authToken = Crypto.ComputeGroupAuthToken(groupKey, groupId);
 
-    Ensure(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, message.SeqNum), "offline group send failed");
+    Ensure(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, message.SeqNum, authToken), "offline group send failed");
 
     var received = new TaskCompletionSource<(string groupId, string senderId, string payload, string sig, long seq, long ts)>(
         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -214,19 +215,20 @@ static async Task GroupReplayRejectionAsync(string serverUrl) {
     };
     var payload = Crypto.EncryptGroup(groupKey, message);
     var sig = Crypto.SignPayload(alice.SignPrivKey, payload, message.SeqNum);
+    var authToken = Crypto.ComputeGroupAuthToken(groupKey, groupId);
     var recipients = new List<string> { alice.UserId, bob.UserId };
 
     var received = new TaskCompletionSource<(string groupId, string senderId, string payload, string sig, long seq, long ts)>(
         TaskCreationOptions.RunContinuationsAsynchronously);
     bobClient.OnGroupMessage += (gid, senderId, body, bodySig, seq, ts) => received.TrySetResult((gid, senderId, body, bodySig, seq, ts));
 
-    Ensure(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, message.SeqNum), "initial group send failed");
+    Ensure(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, message.SeqNum, authToken), "initial group send failed");
     var envelope = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
     var decrypted = Crypto.DecryptGroup(groupKey, groupId, alice.UserId, envelope.payload);
 
     Ensure(decrypted != null && decrypted.Content == "group hello", "group payload did not decrypt");
     Ensure(await bobClient.AckGroupAsync(groupId, alice.UserId, envelope.seq), "group ack failed");
-    Ensure(!await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, message.SeqNum), "group replay should have been rejected");
+    Ensure(!await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, message.SeqNum, authToken), "group replay should have been rejected");
 }
 
 static async Task KeyLookupAsync(string serverUrl) {

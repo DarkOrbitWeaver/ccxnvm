@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Collections.Concurrent;
 using Application = System.Windows.Application;
 using FontFamily = System.Windows.Media.FontFamily;
 using Image = System.Windows.Controls.Image;
@@ -24,7 +25,7 @@ public static class MsgBodyHelper {
     static readonly FontFamily EmojiFont = new("Segoe UI Emoji");
     static readonly IReadOnlyDictionary<string, OpenMojiEntry> EmojiEntries =
         OpenMojiCatalog.Entries.ToDictionary(entry => entry.Emoji, StringComparer.Ordinal);
-    static readonly Dictionary<string, ImageSource> EmojiImageCache = [];
+    static readonly ConcurrentDictionary<string, ImageSource> EmojiImageCache = new(StringComparer.Ordinal);
 
     public static readonly DependencyProperty ContentProperty =
         DependencyProperty.RegisterAttached(
@@ -295,19 +296,16 @@ public static class MsgBodyHelper {
     }
 
     static ImageSource? GetEmojiImageSource(OpenMojiEntry entry) {
-        if (EmojiImageCache.TryGetValue(entry.Code, out var cached)) {
-            return cached;
-        }
-
         try {
-            var bitmap = new BitmapImage();
-            bitmap.BeginInit();
-            bitmap.UriSource = new Uri(entry.PackUri, UriKind.Absolute);
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.EndInit();
-            bitmap.Freeze();
-            EmojiImageCache[entry.Code] = bitmap;
-            return bitmap;
+            return EmojiImageCache.GetOrAdd(entry.Code, _ => {
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.UriSource = new Uri(entry.PackUri, UriKind.Absolute);
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                return bitmap;
+            });
         } catch {
             return null;
         }

@@ -141,7 +141,11 @@ public sealed class ReleaseUpdater {
         }
 
         try {
-            return new ReleaseUpdater(new VelopackUpdateBackend(AppBranding.GitHubRepoUrl));
+            var repoUrl = AppBranding.ResolveUpdateRepoUrl();
+            if (string.IsNullOrWhiteSpace(repoUrl)) {
+                return CreateDisabled($"update feed not configured ({AppBranding.UpdateRepoUrlEnvVar})");
+            }
+            return new ReleaseUpdater(new VelopackUpdateBackend(repoUrl));
         } catch (Exception ex) {
             AppLog.Error("update", "failed to initialize updater", ex);
             return CreateDisabled("updater unavailable");

@@ -1701,17 +1701,18 @@ public partial class MainWindow : Window {
         // Verify signature (server already checked, client double-checks)
         if (!Crypto.Verify(contact.SignPubKey, $"{payload}:{seq}", sig)) return;
 
-        // Replay protection
-        if (!IsNewSeq(conv.Id, contact.UserId, seq)) {
-            await _net.AckDmAsync(senderId, seq);
-            return;
-        }
-
         // Get/derive shared secret
         var convKey = GetOrDeriveConvKey(contact);
         if (convKey == null) return;
 
-        var msg = Crypto.DecryptDm(convKey, senderId, payload);
+        var msgKey = _vault.ConsumeIncomingDmMessageKey(conv.Id, contact.UserId, seq, convKey);
+        if (msgKey == null) {
+            await _net.AckDmAsync(senderId, seq);
+            return;
+        }
+
+        var msg = Crypto.DecryptDmWithMessageKey(msgKey, senderId, payload);
+        Crypto.Wipe(msgKey);
         if (msg == null) return;
 
         msg.ConversationId = conv.Id;
@@ -2088,9 +2089,12 @@ public partial class MainWindow : Window {
             return;
         }
 
-        msg.SeqNum = _vault.NextSeqNum(msg.ConversationId);
-        var payload = Crypto.EncryptDm(convKey, msg);
-        var sig = Crypto.SignPayload(_user!.SignPrivKey, payload, msg.SeqNum);
+        if (!TryPrepareDirectEnvelope(contact, msg, out var payload, out var sig)) {
+            vm.Status = MessageStatus.Failed;
+            ApplyReceiptUi(vm);
+            AppLog.Warn("send", $"direct send failed to prepare ratcheted envelope for {AppTelemetry.MaskUserId(contact.UserId)}");
+            return;
+        }
 
         _vault.SaveMessage(msg);
 
@@ -2116,10 +2120,11 @@ public partial class MainWindow : Window {
         msg.ConvType = ConversationType.Group;
         var payload = Crypto.EncryptGroup(group.GroupKey, msg);
         var sig = Crypto.SignPayload(_user!.SignPrivKey, payload, msg.SeqNum);
+        var authToken = Crypto.ComputeGroupAuthToken(group.GroupKey, group.GroupId);
 
         _vault.SaveMessage(msg);
 
-        var sent = await _net.SendGroupAsync(group.GroupId, group.MemberIds, payload, sig, msg.SeqNum);
+        var sent = await _net.SendGroupAsync(group.GroupId, group.MemberIds, payload, sig, msg.SeqNum, authToken);
         vm.Status = sent ? MessageStatus.Sent : MessageStatus.Sending;
         ApplyReceiptUi(vm);
         if (!sent)
@@ -2145,8 +2150,15 @@ public partial class MainWindow : Window {
             }
             foreach (var item in pending) {
                 bool sent;
-                if (item.ConvType == ConversationType.Group && item.MemberIds != null)
-                    sent = await _net.SendGroupAsync(item.GroupId!, item.MemberIds, item.Payload, item.Sig, item.SeqNum);
+                if (item.ConvType == ConversationType.Group && item.MemberIds != null) {
+                    var group = _convs.FirstOrDefault(c => c.GroupData?.GroupId == item.GroupId)?.GroupData;
+                    if (group == null) {
+                        sent = false;
+                    } else {
+                        var authToken = Crypto.ComputeGroupAuthToken(group.GroupKey, group.GroupId);
+                        sent = await _net.SendGroupAsync(item.GroupId!, item.MemberIds, item.Payload, item.Sig, item.SeqNum, authToken);
+                    }
+                }
                 else
                     sent = await _net.SendDmAsync(item.RecipientId, item.Payload, item.Sig, item.SeqNum);
 
@@ -2274,20 +2286,28 @@ public partial class MainWindow : Window {
         var convId = contact.ConversationId ?? contact.UserId;
         if (_convKeys.TryGetValue(convId, out var cached)) return cached;
 
-        // Try loading from vault
-        var (existingSeq, storedSecret) = _vault.LoadConvState(convId);
-        if (storedSecret != null) {
-            _convKeys[convId] = storedSecret;
-            return storedSecret;
-        }
-
         // Derive from ECDH
         try {
             var secret = Crypto.DeriveSharedSecret(_user!.DhPrivKey, contact.DhPubKey, convId);
-            _vault.SaveConvState(convId, existingSeq, secret);
             _convKeys[convId] = secret;
             return secret;
         } catch { return null; }
+    }
+
+    bool TryPrepareDirectEnvelope(Contact contact, Message message, out string payload, out string sig) {
+        payload = "";
+        sig = "";
+        if (_user == null) return false;
+        var convId = contact.ConversationId ?? contact.UserId;
+        var shared = GetOrDeriveConvKey(contact);
+        if (shared == null) return false;
+        var prepared = _vault.AllocateOutgoingDmMessageKey(convId, shared);
+        if (prepared == null) return false;
+        message.SeqNum = prepared.Value.seq;
+        payload = Crypto.EncryptDmWithMessageKey(prepared.Value.messageKey, message);
+        Crypto.Wipe(prepared.Value.messageKey);
+        sig = Crypto.SignPayload(_user.SignPrivKey, payload, message.SeqNum);
+        return true;
     }
 
     // ── Replay protection ─────────────────────────────────────────────────
@@ -2578,8 +2598,6 @@ public partial class MainWindow : Window {
         if (!RegisterReceiptSent(senderContact.UserId, incoming.Id, status)) return;
 
         var convId = senderContact.ConversationId ?? senderContact.UserId;
-        var convKey = GetOrDeriveConvKey(senderContact);
-        if (convKey == null) return;
 
         var receiptMessage = new Message {
             Id = Guid.NewGuid().ToString("N"),
@@ -2589,10 +2607,7 @@ public partial class MainWindow : Window {
             IsMine = true,
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
-        receiptMessage.SeqNum = _vault.NextSeqNum(convId);
-
-        var payload = Crypto.EncryptDm(convKey, receiptMessage);
-        var sig = Crypto.SignPayload(_user.SignPrivKey, payload, receiptMessage.SeqNum);
+        if (!TryPrepareDirectEnvelope(senderContact, receiptMessage, out var payload, out var sig)) return;
         var sent = await _net.SendDmAsync(senderContact.UserId, payload, sig, receiptMessage.SeqNum);
         if (!sent) {
             _vault.EnqueueOutbox(receiptMessage.Id, senderContact.UserId, payload, sig, receiptMessage.SeqNum);
@@ -2607,8 +2622,6 @@ public partial class MainWindow : Window {
         if (!RegisterReceiptSent(senderContact.UserId, incoming.Id, status)) return;
 
         var convId = senderContact.ConversationId ?? senderContact.UserId;
-        var convKey = GetOrDeriveConvKey(senderContact);
-        if (convKey == null) return;
 
         var receiptMessage = new Message {
             Id = Guid.NewGuid().ToString("N"),
@@ -2618,10 +2631,7 @@ public partial class MainWindow : Window {
             IsMine = true,
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
-        receiptMessage.SeqNum = _vault.NextSeqNum(convId);
-
-        var payload = Crypto.EncryptDm(convKey, receiptMessage);
-        var sig = Crypto.SignPayload(_user.SignPrivKey, payload, receiptMessage.SeqNum);
+        if (!TryPrepareDirectEnvelope(senderContact, receiptMessage, out var payload, out var sig)) return;
         var sent = await _net.SendDmAsync(senderContact.UserId, payload, sig, receiptMessage.SeqNum);
         if (!sent) {
             _vault.EnqueueOutbox(receiptMessage.Id, senderContact.UserId, payload, sig, receiptMessage.SeqNum);
@@ -2798,8 +2808,7 @@ public partial class MainWindow : Window {
             }
 
             var convId = contact.ConversationId ?? contact.UserId;
-            var convKey = GetOrDeriveConvKey(contact);
-            if (convKey == null) {
+            if (GetOrDeriveConvKey(contact) == null) {
                 SetSidebarStatus($"group created, but invite encryption failed for {contact.DisplayName}");
                 continue;
             }
@@ -2812,10 +2821,10 @@ public partial class MainWindow : Window {
                 IsMine = true,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
             };
-            inviteMessage.SeqNum = _vault.NextSeqNum(convId);
-
-            var payload = Crypto.EncryptDm(convKey, inviteMessage);
-            var sig = Crypto.SignPayload(_user.SignPrivKey, payload, inviteMessage.SeqNum);
+            if (!TryPrepareDirectEnvelope(contact, inviteMessage, out var payload, out var sig)) {
+                SetSidebarStatus($"group created, but invite encryption failed for {contact.DisplayName}");
+                continue;
+            }
             var sent = await _net.SendDmAsync(contact.UserId, payload, sig, inviteMessage.SeqNum);
             if (!sent) {
                 _vault.EnqueueOutbox(Guid.NewGuid().ToString("N"), contact.UserId, payload, sig, inviteMessage.SeqNum);
@@ -3206,11 +3215,13 @@ public partial class MainWindow : Window {
 
         var contactsById = _vault.LoadContacts().ToDictionary(c => c.UserId);
         group.MemberIds = group.MemberIds.Concat(newMembers).Distinct().ToList();
+        // Rotate group key on membership change so prior group snapshots cannot read future traffic.
+        group.GroupKey = RandomNumberGenerator.GetBytes(32);
         _vault.SaveGroup(group);
-        await SendGroupInvitesAsync(group, contactsById, newMembers);
+        await SendGroupInvitesAsync(group, contactsById, group.MemberIds.Where(id => id != _user.UserId));
 
         InviteOverlay.Visibility = Visibility.Collapsed;
-        SetSidebarStatus($"invited {newMembers.Count} member(s) to {group.Name}");
+        SetSidebarStatus($"invited {newMembers.Count} member(s) to {group.Name} and rotated the group key");
     }
 
     bool IsCurrentUserGroupOwner(GroupInfo group) =>
@@ -3264,8 +3275,7 @@ public partial class MainWindow : Window {
             if (!await EnsureContactKeysAsync(contact)) continue;
 
             var convId = contact.ConversationId ?? contact.UserId;
-            var convKey = GetOrDeriveConvKey(contact);
-            if (convKey == null) continue;
+            if (GetOrDeriveConvKey(contact) == null) continue;
 
             var notice = new Message {
                 Id = Guid.NewGuid().ToString("N"),
@@ -3275,10 +3285,7 @@ public partial class MainWindow : Window {
                 IsMine = true,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
             };
-            notice.SeqNum = _vault.NextSeqNum(convId);
-
-            var payload = Crypto.EncryptDm(convKey, notice);
-            var sig = Crypto.SignPayload(_user.SignPrivKey, payload, notice.SeqNum);
+            if (!TryPrepareDirectEnvelope(contact, notice, out var payload, out var sig)) continue;
             var sent = await _net.SendDmAsync(contact.UserId, payload, sig, notice.SeqNum);
             if (!sent) {
                 _vault.EnqueueOutbox(Guid.NewGuid().ToString("N"), contact.UserId, payload, sig, notice.SeqNum);
@@ -3476,13 +3483,9 @@ public partial class MainWindow : Window {
                     var msg = new Message {
                         ConversationId = contact.ConversationId ?? "",
                         SenderId = _user.UserId,
-                        Content = $"[SYSTEM] {_user.DisplayName} has detonated their vault. This conversation is over.",
-                        SeqNum = _vault.NextSeqNum(contact.ConversationId ?? contact.UserId)
+                        Content = $"[SYSTEM] {_user.DisplayName} has detonated their vault. This conversation is over."
                     };
-                    var convKey = GetOrDeriveConvKey(contact);
-                    if (convKey != null) {
-                        var payload = Crypto.EncryptDm(convKey, msg);
-                        var sig = Crypto.SignPayload(_user.SignPrivKey, payload, msg.SeqNum);
+                    if (TryPrepareDirectEnvelope(contact, msg, out var payload, out var sig)) {
                         await _net.SendDmAsync(contact.UserId, payload, sig, msg.SeqNum);
                     }
                 } catch (Exception ex) {

@@ -13,7 +13,7 @@ public sealed class VaultRecoveryException : Exception {
 }
 
 public partial class Vault {
-    const int CurrentSchemaVersion = 5;
+    const int CurrentSchemaVersion = 7;
     readonly List<string> _maintenanceActions = [];
 
     public string? LastMaintenanceBackupPath { get; private set; }
@@ -62,6 +62,12 @@ public partial class Vault {
             if (version < 5) {
                 TryExec("ALTER TABLE groups ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''");
                 MigrateGroupMetadataStorage();
+            }
+            if (version < 6) {
+                MigrateMetadataEncryptionStorage();
+            }
+            if (version < 7) {
+                TryExec("ALTER TABLE incoming_seq_state ADD COLUMN chain_key_enc BLOB");
             }
             SetSetting("schema_version", CurrentSchemaVersion.ToString());
             _maintenanceActions.Add($"migrated schema v{version} -> v{CurrentSchemaVersion}");
@@ -168,6 +174,8 @@ public partial class Vault {
                 seq_num INTEGER NOT NULL,
                 conv_type INTEGER NOT NULL DEFAULT 0,
                 group_id TEXT,
+                group_id_enc BLOB,
+                group_id_hmac TEXT,
                 member_ids_enc BLOB,
                 created_at INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0
@@ -186,8 +194,8 @@ public partial class Vault {
 
             ExecParamTx(tx, """
                 INSERT INTO outbox
-                (id, recipient_id_enc, payload_enc, sig_enc, seq_num, conv_type, group_id, member_ids_enc, created_at, attempts)
-                VALUES (@id, @rid, @payload, @sig, @seq, @ctype, @gid, @mids, @created, @attempts)
+                (id, recipient_id_enc, payload_enc, sig_enc, seq_num, conv_type, group_id, group_id_enc, group_id_hmac, member_ids_enc, created_at, attempts)
+                VALUES (@id, @rid, @payload, @sig, @seq, @ctype, '', @gid_enc, @gid_hmac, @mids, @created, @attempts)
                 """,
                 ("id", row.Id),
                 ("rid", Crypto.EncryptStr(_key, row.RecipientId)),
@@ -195,7 +203,8 @@ public partial class Vault {
                 ("sig", Crypto.EncryptStr(_key, row.Sig)),
                 ("seq", row.SeqNum),
                 ("ctype", row.ConvType),
-                ("gid", (object?)row.GroupId ?? DBNull.Value),
+                ("gid_enc", row.GroupId != null ? Crypto.EncryptStr(_key, row.GroupId) : DBNull.Value),
+                ("gid_hmac", row.GroupId != null ? ComputeMetadataIndex("outbox-group", row.GroupId) : DBNull.Value),
                 ("mids", row.MemberIds != null ? Crypto.EncryptStr(_key, row.MemberIds) : DBNull.Value),
                 ("created", row.CreatedAt),
                 ("attempts", row.Attempts));
@@ -248,6 +257,124 @@ public partial class Vault {
                 ("memberIdsEnc", string.IsNullOrWhiteSpace(row.MemberIds) ? DBNull.Value : Crypto.EncryptStr(_key, row.MemberIds)),
                 ("ownerIdEnc", string.IsNullOrWhiteSpace(row.OwnerId) ? DBNull.Value : Crypto.EncryptStr(_key, row.OwnerId)));
         }
+        tx.Commit();
+    }
+
+    void MigrateMetadataEncryptionStorage() {
+        TryExec("ALTER TABLE contacts ADD COLUMN sign_pub_enc BLOB");
+        TryExec("ALTER TABLE contacts ADD COLUMN dh_pub_enc BLOB");
+        TryExec("ALTER TABLE contacts ADD COLUMN conversation_id_enc BLOB");
+        TryExec("ALTER TABLE contacts ADD COLUMN conversation_id_hmac TEXT");
+        TryExec("ALTER TABLE messages ADD COLUMN conversation_id_enc BLOB");
+        TryExec("ALTER TABLE messages ADD COLUMN conversation_id_hmac TEXT");
+        TryExec("ALTER TABLE messages ADD COLUMN sender_id_enc BLOB");
+        TryExec("ALTER TABLE messages ADD COLUMN timestamp_enc BLOB");
+        TryExec("ALTER TABLE outbox ADD COLUMN group_id_enc BLOB");
+        TryExec("ALTER TABLE outbox ADD COLUMN group_id_hmac TEXT");
+        TryExec("DROP INDEX IF EXISTS idx_msg_conv");
+        TryExec("CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id_hmac, id)");
+
+        using var tx = _db!.BeginTransaction(deferred: false);
+
+        using (var select = _db.CreateCommand()) {
+            select.Transaction = tx;
+            select.CommandText = """
+                SELECT user_id, sign_pub, dh_pub, conversation_id
+                FROM contacts
+                """;
+            using var reader = select.ExecuteReader();
+            var rows = new List<(string UserId, string SignPub, string DhPub, string ConversationId)>();
+            while (reader.Read()) {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? "" : reader.GetString(1),
+                    reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    reader.IsDBNull(3) ? "" : reader.GetString(3)));
+            }
+
+            foreach (var row in rows) {
+                ExecParamTx(tx, """
+                    UPDATE contacts
+                    SET sign_pub = '',
+                        dh_pub = '',
+                        conversation_id = '',
+                        sign_pub_enc = @sp_enc,
+                        dh_pub_enc = @dp_enc,
+                        conversation_id_enc = @conv_enc,
+                        conversation_id_hmac = @conv_hmac
+                    WHERE user_id = @uid
+                    """,
+                    ("uid", row.UserId),
+                    ("sp_enc", Crypto.EncryptStr(_key, row.SignPub)),
+                    ("dp_enc", Crypto.EncryptStr(_key, row.DhPub)),
+                    ("conv_enc", Crypto.EncryptStr(_key, row.ConversationId)),
+                    ("conv_hmac", ComputeMetadataIndex("contact-conversation", row.ConversationId)));
+            }
+        }
+
+        using (var select = _db.CreateCommand()) {
+            select.Transaction = tx;
+            select.CommandText = """
+                SELECT id, conversation_id, sender_id, timestamp
+                FROM messages
+                """;
+            using var reader = select.ExecuteReader();
+            var rows = new List<(string Id, string ConversationId, string SenderId, long Timestamp)>();
+            while (reader.Read()) {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? "" : reader.GetString(1),
+                    reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    reader.IsDBNull(3) ? 0 : reader.GetInt64(3)));
+            }
+
+            foreach (var row in rows) {
+                ExecParamTx(tx, """
+                    UPDATE messages
+                    SET conversation_id = '',
+                        sender_id = '',
+                        timestamp = 0,
+                        conversation_id_enc = @conv_enc,
+                        conversation_id_hmac = @conv_hmac,
+                        sender_id_enc = @sid_enc,
+                        timestamp_enc = @ts_enc
+                    WHERE id = @id
+                    """,
+                    ("id", row.Id),
+                    ("conv_enc", Crypto.EncryptStr(_key, row.ConversationId)),
+                    ("conv_hmac", ComputeMetadataIndex("message-conversation", row.ConversationId)),
+                    ("sid_enc", Crypto.EncryptStr(_key, row.SenderId)),
+                    ("ts_enc", Crypto.EncryptField(_key, BitConverter.GetBytes(row.Timestamp))));
+            }
+        }
+
+        using (var select = _db.CreateCommand()) {
+            select.Transaction = tx;
+            select.CommandText = """
+                SELECT id, group_id
+                FROM outbox
+                WHERE group_id IS NOT NULL AND group_id <> ''
+                """;
+            using var reader = select.ExecuteReader();
+            var rows = new List<(string Id, string GroupId)>();
+            while (reader.Read()) {
+                rows.Add((reader.GetString(0), reader.GetString(1)));
+            }
+
+            foreach (var row in rows) {
+                ExecParamTx(tx, """
+                    UPDATE outbox
+                    SET group_id = '',
+                        group_id_enc = @gid_enc,
+                        group_id_hmac = @gid_hmac
+                    WHERE id = @id
+                    """,
+                    ("id", row.Id),
+                    ("gid_enc", Crypto.EncryptStr(_key, row.GroupId)),
+                    ("gid_hmac", ComputeMetadataIndex("outbox-group", row.GroupId)));
+            }
+        }
+
         tx.Commit();
     }
 
@@ -385,7 +512,7 @@ public partial class Vault {
         if (user != null) {
             var missingContactConversations = ExecuteScalarInt(@"
                 SELECT COUNT(*) FROM contacts
-                WHERE conversation_id IS NULL OR conversation_id = ''");
+                WHERE conversation_id_hmac IS NULL OR conversation_id_hmac = ''");
             if (missingContactConversations > 0) {
                 actions.Add(tx => {
                     using var select = _db!.CreateCommand();
@@ -393,7 +520,7 @@ public partial class Vault {
                     select.CommandText = @"
                         SELECT user_id
                         FROM contacts
-                        WHERE conversation_id IS NULL OR conversation_id = ''";
+                        WHERE conversation_id_hmac IS NULL OR conversation_id_hmac = ''";
                     using var reader = select.ExecuteReader();
                     var userIds = new List<string>();
                     while (reader.Read()) {
@@ -404,9 +531,11 @@ public partial class Vault {
                         var ids = new[] { user.UserId, userId }
                             .OrderBy(x => x, StringComparer.Ordinal)
                             .ToArray();
+                        var convId = $"dm:{ids[0]}:{ids[1]}";
                         ExecParamTx(tx,
-                            "UPDATE contacts SET conversation_id=@conv WHERE user_id=@uid",
-                            ("conv", $"dm:{ids[0]}:{ids[1]}"),
+                            "UPDATE contacts SET conversation_id='', conversation_id_enc=@conv_enc, conversation_id_hmac=@conv_hmac WHERE user_id=@uid",
+                            ("conv_enc", Crypto.EncryptStr(_key, convId)),
+                            ("conv_hmac", ComputeMetadataIndex("contact-conversation", convId)),
                             ("uid", userId));
                     }
 

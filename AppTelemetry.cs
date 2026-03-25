@@ -24,7 +24,7 @@ public static class AppTelemetry {
     public static string MaskUserId(string? userId) {
         if (string.IsNullOrWhiteSpace(userId)) return "unknown";
         var trimmed = userId.Trim();
-        return trimmed.Length <= 10 ? trimmed : $"{trimmed[..6]}...{trimmed[^4..]}";
+        return trimmed.Length <= 8 ? trimmed : $"{trimmed[..4]}...";
     }
 
     public static string DescribeConversation(string conversationId, bool isGroup) =>

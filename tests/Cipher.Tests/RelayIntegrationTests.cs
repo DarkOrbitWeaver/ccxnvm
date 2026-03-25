@@ -124,6 +124,7 @@ public class RelayIntegrationTests {
         };
         var payload = Crypto.EncryptGroup(groupKey, groupMessage);
         var sig = Crypto.SignPayload(alice.SignPrivKey, payload, groupMessage.SeqNum);
+        var authToken = Crypto.ComputeGroupAuthToken(groupKey, groupId);
 
         var received = new TaskCompletionSource<(string groupId, string senderId, string payload, string sig, long seq, long ts)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -132,7 +133,7 @@ public class RelayIntegrationTests {
 
         var recipients = new List<string> { alice.UserId, bob.UserId };
 
-        Assert.True(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, groupMessage.SeqNum));
+        Assert.True(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, groupMessage.SeqNum, authToken));
         var envelope = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(groupId, envelope.groupId);
 
@@ -140,7 +141,7 @@ public class RelayIntegrationTests {
         Assert.NotNull(decrypted);
         Assert.Equal("group hello", decrypted!.Content);
 
-        Assert.False(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, groupMessage.SeqNum));
+        Assert.False(await aliceClient.SendGroupAsync(groupId, recipients, payload, sig, groupMessage.SeqNum, authToken));
     }
 
     [Fact]

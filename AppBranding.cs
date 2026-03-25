@@ -7,11 +7,16 @@ public static class AppBranding {
     public const string DisplayTitle = "ZLABO";
 
     public const string DefaultRelayUrl = "https://cipher-relay.onrender.com";
-    public const string GitHubRepoUrl = "https://github.com/DarkOrbitWeaver/ccxnvm";
+    public const string UpdateRepoUrlEnvVar = "CIPHER_UPDATE_REPO_URL";
 
     public static string ResolveRelayUrl(string? url) {
         var trimmed = url?.Trim().TrimEnd('/') ?? "";
         return string.IsNullOrWhiteSpace(trimmed) ? DefaultRelayUrl : trimmed;
+    }
+
+    public static string? ResolveUpdateRepoUrl() {
+        var fromEnv = Environment.GetEnvironmentVariable(UpdateRepoUrlEnvVar)?.Trim();
+        return string.IsNullOrWhiteSpace(fromEnv) ? null : fromEnv;
     }
 
     public static string ProductName =>
