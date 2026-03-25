@@ -78,6 +78,15 @@ public class Message {
     public ConversationType ConvType { get; set; }
 }
 
+public sealed class DmSessionState {
+    public string ConversationId { get; set; } = "";
+    public string RemoteUserId { get; set; } = "";
+    public string SessionId { get; set; } = "";
+    public byte[] RootKey { get; set; } = [];
+    public long LastSendSeq { get; set; }
+    public long LastRecvSeq { get; set; }
+}
+
 // Encrypted wire format (legacy v1)
 record WireMessage(
     [property: JsonPropertyName("id")] string Id,
@@ -371,7 +380,7 @@ public static class Crypto {
         return EncryptDmWithMessageKey(msgKey, msg);
     }
 
-    public static string EncryptDmWithMessageKey(byte[] msgKey, Message msg) {
+    public static string EncryptDmWithMessageKey(byte[] msgKey, Message msg, string? dhRatchetPubKey = "legacy") {
         var plain = PackMessagePlaintext(msg.Content);
         var (ct, nonce, tag) = Encrypt(msgKey, plain);
         var sessionId = string.IsNullOrWhiteSpace(msg.ConversationId) ? "dm:legacy" : msg.ConversationId;
@@ -379,7 +388,7 @@ public static class Crypto {
             WireMessageVersion,
             sessionId,
             "dm",
-            "legacy",
+            string.IsNullOrWhiteSpace(dhRatchetPubKey) ? "legacy" : dhRatchetPubKey,
             msg.Id,
             Convert.ToBase64String(ct),
             Convert.ToBase64String(nonce),
@@ -460,6 +469,22 @@ public static class Crypto {
             Wipe(msgKey);
             return msg;
         } catch { return null; }
+    }
+
+    public static bool TryParseDmWireMeta(string payload, out string sessionId, out long seqNum, out long sentAt) {
+        sessionId = "";
+        seqNum = 0;
+        sentAt = 0;
+        try {
+            var wire = JsonSerializer.Deserialize<WireMessageV2>(payload, JsonOpts);
+            if (!HasRequiredWireFieldsV2(wire, "dm")) return false;
+            sessionId = wire!.SessionId;
+            seqNum = wire.SeqNum;
+            sentAt = wire.SentAt;
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     /// <summary>Encrypt message for a group using the group's symmetric key.</summary>
@@ -651,6 +676,14 @@ public partial class Vault : IDisposable {
                 last_seq INTEGER NOT NULL DEFAULT 0,
                 chain_key_enc BLOB,
                 PRIMARY KEY (conversation_id, sender_id)
+            );
+            CREATE TABLE IF NOT EXISTS dm_sessions (
+                conversation_id TEXT PRIMARY KEY,
+                remote_user_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                root_key_enc BLOB NOT NULL,
+                last_send_seq INTEGER NOT NULL DEFAULT 0,
+                last_recv_seq INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS skipped_dm_keys (
                 conversation_id TEXT NOT NULL,
@@ -1185,6 +1218,63 @@ public partial class Vault : IDisposable {
         }
     }
 
+    public DmSessionState? LoadDmSession(string convId) {
+        lock (_gate) {
+            using var cmd = _db!.CreateCommand();
+            cmd.CommandText = """
+                SELECT remote_user_id, session_id, root_key_enc, last_send_seq, last_recv_seq
+                FROM dm_sessions
+                WHERE conversation_id=@conv
+                LIMIT 1
+                """;
+            cmd.Parameters.AddWithValue("@conv", convId);
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read()) return null;
+
+            var rootKey = Crypto.DecryptField(_key, (byte[])reader["root_key_enc"]);
+            if (rootKey == null) return null;
+            return new DmSessionState {
+                ConversationId = convId,
+                RemoteUserId = reader.GetString(0),
+                SessionId = reader.GetString(1),
+                RootKey = rootKey,
+                LastSendSeq = reader.GetInt64(3),
+                LastRecvSeq = reader.GetInt64(4)
+            };
+        }
+    }
+
+    public void SaveDmSession(DmSessionState session) {
+        lock (_gate) {
+            var rootKeyEnc = Crypto.EncryptField(_key, session.RootKey);
+            ExecParam("""
+                INSERT INTO dm_sessions(conversation_id, remote_user_id, session_id, root_key_enc, last_send_seq, last_recv_seq)
+                VALUES (@conv, @remote, @sid, @root, @send, @recv)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    remote_user_id = excluded.remote_user_id,
+                    session_id = excluded.session_id,
+                    root_key_enc = excluded.root_key_enc,
+                    last_send_seq = CASE
+                        WHEN excluded.last_send_seq > dm_sessions.last_send_seq THEN excluded.last_send_seq
+                        ELSE dm_sessions.last_send_seq
+                    END,
+                    last_recv_seq = CASE
+                        WHEN excluded.last_recv_seq > dm_sessions.last_recv_seq THEN excluded.last_recv_seq
+                        ELSE dm_sessions.last_recv_seq
+                    END
+                """,
+                ("conv", session.ConversationId),
+                ("remote", session.RemoteUserId),
+                ("sid", session.SessionId),
+                ("root", rootKeyEnc),
+                ("send", session.LastSendSeq),
+                ("recv", session.LastRecvSeq));
+        }
+    }
+
+    public void DeleteDmSession(string convId) =>
+        ExecParam("DELETE FROM dm_sessions WHERE conversation_id=@conv", ("conv", convId));
+
     void SaveSkippedDmMessageKeyCore(SqliteTransaction? transaction, string convId, string senderId, long seq, byte[] messageKey) {
         var keyEnc = Crypto.EncryptField(_key, messageKey);
         using var insert = _db!.CreateCommand();
@@ -1272,6 +1362,21 @@ public partial class Vault : IDisposable {
             var (lastSeq, secret) = LoadConvStateCore(null, convId);
             if (secret != null) Crypto.Wipe(secret);
             SaveConvStateCore(null, convId, lastSeq, null);
+        }
+    }
+
+    public void ResetDirectRatchetState(string convId, string remoteUserId) {
+        lock (_gate) {
+            ExecParam("DELETE FROM conv_state WHERE conversation_id=@conv", ("conv", convId));
+            ExecParam(
+                "DELETE FROM incoming_seq_state WHERE conversation_id=@conv AND sender_id=@sender",
+                ("conv", convId),
+                ("sender", remoteUserId));
+            ExecParam(
+                "DELETE FROM skipped_dm_keys WHERE conversation_id=@conv AND sender_id=@sender",
+                ("conv", convId),
+                ("sender", remoteUserId));
+            ExecParam("DELETE FROM dm_sessions WHERE conversation_id=@conv", ("conv", convId));
         }
     }
 
@@ -1905,13 +2010,27 @@ public class NetworkClient : IAsyncDisposable {
             var started = AppTelemetry.StartTimer();
             var dhPubKey = Convert.ToBase64String(_user.DhPubKey);
             var selfSig = Crypto.SignRegistration(_user.SignPrivKey, _user.UserId, dhPubKey);
+            var (signedPrekeyPriv, signedPrekeyPub) = Crypto.GenerateDhKeys();
+            var signedPrekeyPubKey = Convert.ToBase64String(signedPrekeyPub);
+            var signedPrekeySig = Crypto.Sign(_user.SignPrivKey, $"{_user.UserId}:{signedPrekeyPubKey}");
+            var (oneTimePrekeyPriv, oneTimePrekeyPub) = Crypto.GenerateDhKeys();
+            var oneTimePrekeyId = Guid.NewGuid().ToString("N");
+            var oneTimePrekeyPubKey = Convert.ToBase64String(oneTimePrekeyPub);
             AppLog.Info("relay", $"register begin user={AppTelemetry.MaskUserId(_user.UserId)}");
             await _hub.InvokeAsync("RegisterV2",
                 _user.UserId,
                 Convert.ToBase64String(_user.SignPubKey),
                 dhPubKey,
                 selfSig,
-                2);
+                2,
+                signedPrekeyPubKey,
+                signedPrekeySig,
+                oneTimePrekeyId,
+                oneTimePrekeyPubKey);
+            Crypto.Wipe(signedPrekeyPriv);
+            Crypto.Wipe(signedPrekeyPub);
+            Crypto.Wipe(oneTimePrekeyPriv);
+            Crypto.Wipe(oneTimePrekeyPub);
             await TryPublishDisplayNameAsync();
             _lastRegisteredConnectionId = connectionId;
             AppLog.Info("relay", $"registered relay identity for {AppTelemetry.MaskUserId(_user.UserId)} in {AppTelemetry.ElapsedMilliseconds(started)}ms");

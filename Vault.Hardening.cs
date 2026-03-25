@@ -13,7 +13,7 @@ public sealed class VaultRecoveryException : Exception {
 }
 
 public partial class Vault {
-    const int CurrentSchemaVersion = 8;
+    const int CurrentSchemaVersion = 9;
     readonly List<string> _maintenanceActions = [];
 
     public string? LastMaintenanceBackupPath { get; private set; }
@@ -80,6 +80,18 @@ public partial class Vault {
                         message_key_enc BLOB NOT NULL,
                         created_at INTEGER NOT NULL,
                         PRIMARY KEY (conversation_id, sender_id, seq_num)
+                    )
+                    """);
+            }
+            if (version < 9) {
+                TryExec("""
+                    CREATE TABLE IF NOT EXISTS dm_sessions (
+                        conversation_id TEXT PRIMARY KEY,
+                        remote_user_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        root_key_enc BLOB NOT NULL,
+                        last_send_seq INTEGER NOT NULL DEFAULT 0,
+                        last_recv_seq INTEGER NOT NULL DEFAULT 0
                     )
                     """);
             }

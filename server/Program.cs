@@ -94,7 +94,16 @@ static class RelayState {
 
 public readonly record struct KeyLookupChallenge(string CallerUserId, long ExpiresAt);
 
-public record KeyBundle(string UserId, string SignPubKey, string DhPubKey, long RegisteredAt, string DisplayName = "");
+public record KeyBundle(
+    string UserId,
+    string SignPubKey,
+    string DhPubKey,
+    long RegisteredAt,
+    string DisplayName = "",
+    string SignedPrekeyPubKey = "",
+    string SignedPrekeySignature = "",
+    string OneTimePrekeyId = "",
+    string OneTimePrekeyPubKey = "");
 
 public class CipherHub : Hub {
     readonly IRelayStore _store;
@@ -110,7 +119,16 @@ public class CipherHub : Hub {
     public Task Register(string userId, string signPubKey, string dhPubKey, string selfSig) =>
         throw new HubException("UPGRADE_REQUIRED");
 
-    public async Task RegisterV2(string userId, string signPubKey, string dhPubKey, string selfSig, int protocolVersion) {
+    public async Task RegisterV2(
+        string userId,
+        string signPubKey,
+        string dhPubKey,
+        string selfSig,
+        int protocolVersion,
+        string? signedPrekeyPubKey = null,
+        string? signedPrekeySignature = null,
+        string? oneTimePrekeyId = null,
+        string? oneTimePrekeyPubKey = null) {
         if (protocolVersion < 2) throw new HubException("UPGRADE_REQUIRED");
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -122,7 +140,14 @@ public class CipherHub : Hub {
             throw new HubException("INVALID_SIGNATURE");
         }
 
-        if (!IsValidRegistrationPayload(userId, signPubKey, dhPubKey)) {
+        if (!IsValidRegistrationPayload(
+                userId,
+                signPubKey,
+                dhPubKey,
+                signedPrekeyPubKey,
+                signedPrekeySignature,
+                oneTimePrekeyId,
+                oneTimePrekeyPubKey)) {
             throw new HubException("INVALID_ID");
         }
 
@@ -139,7 +164,11 @@ public class CipherHub : Hub {
             userId,
             signPubKey,
             dhPubKey,
-            now));
+            now,
+            SignedPrekeyPubKey: NormalizeOptionalToken(signedPrekeyPubKey),
+            SignedPrekeySignature: NormalizeOptionalToken(signedPrekeySignature),
+            OneTimePrekeyId: NormalizeOptionalToken(oneTimePrekeyId),
+            OneTimePrekeyPubKey: NormalizeOptionalToken(oneTimePrekeyPubKey)));
 
         var pending = await _store.GetPendingMessagesAsync(userId, 200, now);
         var delivered = 0;
@@ -309,7 +338,7 @@ public class CipherHub : Hub {
         if (!await VerifyKeyLookupChallengeAsync(callerId, userId, challenge, challengeSig)) {
             throw new HubException("INVALID_SIGNATURE");
         }
-        return await _store.GetKeyBundleAsync(userId);
+        return await _store.TakePrekeyBundleAsync(userId);
     }
 
     public async Task AnnouncePresence(List<string> contactIds) {
@@ -335,7 +364,14 @@ public class CipherHub : Hub {
         await base.OnDisconnectedAsync(exception);
     }
 
-    static bool IsValidRegistrationPayload(string userId, string signPubKey, string dhPubKey) {
+    static bool IsValidRegistrationPayload(
+        string userId,
+        string signPubKey,
+        string dhPubKey,
+        string? signedPrekeyPubKey,
+        string? signedPrekeySignature,
+        string? oneTimePrekeyId,
+        string? oneTimePrekeyPubKey) {
         if (string.IsNullOrWhiteSpace(userId) ||
             string.IsNullOrWhiteSpace(signPubKey) ||
             string.IsNullOrWhiteSpace(dhPubKey)) {
@@ -353,11 +389,39 @@ public class CipherHub : Hub {
             ecdsa.ImportSubjectPublicKeyInfo(signBytes, out _);
             using var ecdh = ECDiffieHellman.Create();
             ecdh.ImportSubjectPublicKeyInfo(dhBytes, out _);
+            if (!string.IsNullOrWhiteSpace(signedPrekeyPubKey)) {
+                var signedPrekeyBytes = Convert.FromBase64String(signedPrekeyPubKey);
+                using var spk = ECDiffieHellman.Create();
+                spk.ImportSubjectPublicKeyInfo(signedPrekeyBytes, out _);
+                if (string.IsNullOrWhiteSpace(signedPrekeySignature)) return false;
+                using var identityEcdsa = ECDsa.Create();
+                identityEcdsa.ImportSubjectPublicKeyInfo(signBytes, out _);
+                var signature = Convert.FromBase64String(signedPrekeySignature);
+                if (!identityEcdsa.VerifyData(
+                        Encoding.UTF8.GetBytes($"{userId}:{signedPrekeyPubKey}"),
+                        signature,
+                        HashAlgorithmName.SHA256)) {
+                    return false;
+                }
+            } else if (!string.IsNullOrWhiteSpace(signedPrekeySignature)) {
+                return false;
+            }
+            if (!string.IsNullOrWhiteSpace(oneTimePrekeyPubKey)) {
+                if (string.IsNullOrWhiteSpace(oneTimePrekeyId) || !IsValidToken(oneTimePrekeyId, 8, 128)) return false;
+                var otpkBytes = Convert.FromBase64String(oneTimePrekeyPubKey);
+                using var otpk = ECDiffieHellman.Create();
+                otpk.ImportSubjectPublicKeyInfo(otpkBytes, out _);
+            } else if (!string.IsNullOrWhiteSpace(oneTimePrekeyId)) {
+                return false;
+            }
             return true;
         } catch {
             return false;
         }
     }
+
+    static string NormalizeOptionalToken(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "" : value.Trim();
 
     static bool IsValidMessageEnvelope(string targetId, string payload, string sig) {
         if (!IsValidToken(targetId, 8, 128)) return false;

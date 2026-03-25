@@ -78,6 +78,7 @@ public interface IRelayStore {
     Task<bool> AllowRequestAsync(string bucket, int limit, TimeSpan window, long nowMs, CancellationToken cancellationToken = default);
     Task UpsertKeyBundleAsync(KeyBundle bundle, CancellationToken cancellationToken = default);
     Task<KeyBundle?> GetKeyBundleAsync(string userId, CancellationToken cancellationToken = default);
+    Task<KeyBundle?> TakePrekeyBundleAsync(string userId, CancellationToken cancellationToken = default);
     Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default);
     Task<bool> TryStoreDirectAsync(string recipientId, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
     Task<bool> TryStoreGroupAsync(string groupId, IReadOnlyList<string> recipientIds, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
@@ -112,6 +113,7 @@ abstract class RelayStoreBase : IRelayStore {
     public abstract Task<bool> AllowRequestAsync(string bucket, int limit, TimeSpan window, long nowMs, CancellationToken cancellationToken = default);
     public abstract Task UpsertKeyBundleAsync(KeyBundle bundle, CancellationToken cancellationToken = default);
     public abstract Task<KeyBundle?> GetKeyBundleAsync(string userId, CancellationToken cancellationToken = default);
+    public abstract Task<KeyBundle?> TakePrekeyBundleAsync(string userId, CancellationToken cancellationToken = default);
     public abstract Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default);
     public abstract Task<bool> TryStoreDirectAsync(string recipientId, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
     public abstract Task<bool> TryStoreGroupAsync(string groupId, IReadOnlyList<string> recipientIds, string senderId, string payload, string sig, long seqNum, long ts, long expiresAt, CancellationToken cancellationToken = default);
@@ -128,7 +130,11 @@ abstract class RelayStoreBase : IRelayStore {
             sign_pub_key TEXT NOT NULL,
             dh_pub_key TEXT NOT NULL,
             registered_at INTEGER NOT NULL,
-            display_name TEXT NOT NULL DEFAULT ''
+            display_name TEXT NOT NULL DEFAULT '',
+            signed_prekey_pub_key TEXT NOT NULL DEFAULT '',
+            signed_prekey_signature TEXT NOT NULL DEFAULT '',
+            one_time_prekey_id TEXT NOT NULL DEFAULT '',
+            one_time_prekey_pub_key TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS direct_seq_state (
@@ -253,6 +259,7 @@ sealed class SqliteRelayStore : RelayStoreBase {
         command.CommandText = SchemaSql;
         await command.ExecuteNonQueryAsync(cancellationToken);
         await EnsureDisplayNameColumnAsync(connection, cancellationToken);
+        await EnsurePrekeyColumnsAsync(connection, cancellationToken);
         Logger.LogInformation("Relay store ready with local SQLite at {Path}", Options.SqlitePath);
     }
 
@@ -296,12 +303,26 @@ sealed class SqliteRelayStore : RelayStoreBase {
         await connection.OpenAsync(cancellationToken);
         await ExecuteNonQueryAsync(connection,
             """
-            INSERT INTO key_bundles(user_id, sign_pub_key, dh_pub_key, registered_at, display_name)
-            VALUES (@user_id, @sign_pub_key, @dh_pub_key, @registered_at, @display_name)
+            INSERT INTO key_bundles(
+                user_id, sign_pub_key, dh_pub_key, registered_at, display_name,
+                signed_prekey_pub_key, signed_prekey_signature, one_time_prekey_id, one_time_prekey_pub_key)
+            VALUES (
+                @user_id, @sign_pub_key, @dh_pub_key, @registered_at, @display_name,
+                @signed_prekey_pub_key, @signed_prekey_signature, @one_time_prekey_id, @one_time_prekey_pub_key)
             ON CONFLICT(user_id) DO UPDATE SET
                 sign_pub_key = excluded.sign_pub_key,
                 dh_pub_key = excluded.dh_pub_key,
                 registered_at = excluded.registered_at,
+                signed_prekey_pub_key = excluded.signed_prekey_pub_key,
+                signed_prekey_signature = excluded.signed_prekey_signature,
+                one_time_prekey_id = CASE
+                    WHEN length(excluded.one_time_prekey_id) > 0 THEN excluded.one_time_prekey_id
+                    ELSE key_bundles.one_time_prekey_id
+                END,
+                one_time_prekey_pub_key = CASE
+                    WHEN length(excluded.one_time_prekey_pub_key) > 0 THEN excluded.one_time_prekey_pub_key
+                    ELSE key_bundles.one_time_prekey_pub_key
+                END,
                 display_name = CASE
                     WHEN length(excluded.display_name) > 0 THEN excluded.display_name
                     ELSE key_bundles.display_name
@@ -312,7 +333,11 @@ sealed class SqliteRelayStore : RelayStoreBase {
                 SqlArg.Text("sign_pub_key", bundle.SignPubKey),
                 SqlArg.Text("dh_pub_key", bundle.DhPubKey),
                 SqlArg.Integer("registered_at", bundle.RegisteredAt),
-                SqlArg.Text("display_name", bundle.DisplayName)
+                SqlArg.Text("display_name", bundle.DisplayName),
+                SqlArg.Text("signed_prekey_pub_key", bundle.SignedPrekeyPubKey),
+                SqlArg.Text("signed_prekey_signature", bundle.SignedPrekeySignature),
+                SqlArg.Text("one_time_prekey_id", bundle.OneTimePrekeyId),
+                SqlArg.Text("one_time_prekey_pub_key", bundle.OneTimePrekeyPubKey)
             ],
             cancellationToken);
     }
@@ -322,7 +347,8 @@ sealed class SqliteRelayStore : RelayStoreBase {
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT user_id, sign_pub_key, dh_pub_key, registered_at, display_name
+            SELECT user_id, sign_pub_key, dh_pub_key, registered_at, display_name,
+                   signed_prekey_pub_key, signed_prekey_signature, one_time_prekey_id, one_time_prekey_pub_key
             FROM key_bundles
             WHERE user_id = @user_id
             LIMIT 1
@@ -338,7 +364,58 @@ sealed class SqliteRelayStore : RelayStoreBase {
             reader.GetString(1),
             reader.GetString(2),
             reader.GetInt64(3),
-            reader.GetString(4));
+            reader.GetString(4),
+            reader.GetString(5),
+            reader.GetString(6),
+            reader.GetString(7),
+            reader.GetString(8));
+    }
+
+    public override async Task<KeyBundle?> TakePrekeyBundleAsync(string userId, CancellationToken cancellationToken = default) {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+
+        KeyBundle? bundle = null;
+        await using (var command = connection.CreateCommand()) {
+            command.Transaction = (SqliteTransaction)tx;
+            command.CommandText = """
+                SELECT user_id, sign_pub_key, dh_pub_key, registered_at, display_name,
+                       signed_prekey_pub_key, signed_prekey_signature, one_time_prekey_id, one_time_prekey_pub_key
+                FROM key_bundles
+                WHERE user_id=@user_id
+                LIMIT 1
+                """;
+            command.Parameters.AddWithValue("@user_id", userId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken)) {
+                bundle = new KeyBundle(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetInt64(3),
+                    reader.GetString(4),
+                    reader.GetString(5),
+                    reader.GetString(6),
+                    reader.GetString(7),
+                    reader.GetString(8));
+            }
+        }
+
+        if (bundle != null && !string.IsNullOrWhiteSpace(bundle.OneTimePrekeyId)) {
+            await using var update = connection.CreateCommand();
+            update.Transaction = (SqliteTransaction)tx;
+            update.CommandText = """
+                UPDATE key_bundles
+                SET one_time_prekey_id = '', one_time_prekey_pub_key = ''
+                WHERE user_id = @user_id
+                """;
+            update.Parameters.AddWithValue("@user_id", userId);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await tx.CommitAsync(cancellationToken);
+        return bundle;
     }
 
     public override async Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default) {
@@ -363,6 +440,20 @@ sealed class SqliteRelayStore : RelayStoreBase {
                 "ALTER TABLE key_bundles ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
                 [],
                 cancellationToken);
+        } catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) {
+        }
+    }
+
+    static async Task EnsurePrekeyColumnsAsync(SqliteConnection connection, CancellationToken cancellationToken) {
+        await TryEnsureColumnAsync(connection, "ALTER TABLE key_bundles ADD COLUMN signed_prekey_pub_key TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await TryEnsureColumnAsync(connection, "ALTER TABLE key_bundles ADD COLUMN signed_prekey_signature TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await TryEnsureColumnAsync(connection, "ALTER TABLE key_bundles ADD COLUMN one_time_prekey_id TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await TryEnsureColumnAsync(connection, "ALTER TABLE key_bundles ADD COLUMN one_time_prekey_pub_key TEXT NOT NULL DEFAULT ''", cancellationToken);
+    }
+
+    static async Task TryEnsureColumnAsync(SqliteConnection connection, string sql, CancellationToken cancellationToken) {
+        try {
+            await ExecuteNonQueryAsync(connection, sql, [], cancellationToken);
         } catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) {
         }
     }
@@ -737,6 +828,7 @@ sealed class TursoRelayStore : RelayStoreBase {
     public override async Task InitializeAsync(CancellationToken cancellationToken = default) {
         await ExecuteSequenceAsync(SchemaSql, cancellationToken);
         await EnsureDisplayNameColumnAsync(cancellationToken);
+        await EnsurePrekeyColumnsAsync(cancellationToken);
         Logger.LogInformation("Relay store ready with Turso at {Url}", Options.TursoUrl);
     }
 
@@ -768,12 +860,26 @@ sealed class TursoRelayStore : RelayStoreBase {
     public override Task UpsertKeyBundleAsync(KeyBundle bundle, CancellationToken cancellationToken = default) =>
         ExecuteNonQueryAsync(
             """
-            INSERT INTO key_bundles(user_id, sign_pub_key, dh_pub_key, registered_at, display_name)
-            VALUES (@user_id, @sign_pub_key, @dh_pub_key, @registered_at, @display_name)
+            INSERT INTO key_bundles(
+                user_id, sign_pub_key, dh_pub_key, registered_at, display_name,
+                signed_prekey_pub_key, signed_prekey_signature, one_time_prekey_id, one_time_prekey_pub_key)
+            VALUES (
+                @user_id, @sign_pub_key, @dh_pub_key, @registered_at, @display_name,
+                @signed_prekey_pub_key, @signed_prekey_signature, @one_time_prekey_id, @one_time_prekey_pub_key)
             ON CONFLICT(user_id) DO UPDATE SET
                 sign_pub_key = excluded.sign_pub_key,
                 dh_pub_key = excluded.dh_pub_key,
                 registered_at = excluded.registered_at,
+                signed_prekey_pub_key = excluded.signed_prekey_pub_key,
+                signed_prekey_signature = excluded.signed_prekey_signature,
+                one_time_prekey_id = CASE
+                    WHEN length(excluded.one_time_prekey_id) > 0 THEN excluded.one_time_prekey_id
+                    ELSE key_bundles.one_time_prekey_id
+                END,
+                one_time_prekey_pub_key = CASE
+                    WHEN length(excluded.one_time_prekey_pub_key) > 0 THEN excluded.one_time_prekey_pub_key
+                    ELSE key_bundles.one_time_prekey_pub_key
+                END,
                 display_name = CASE
                     WHEN length(excluded.display_name) > 0 THEN excluded.display_name
                     ELSE key_bundles.display_name
@@ -784,14 +890,19 @@ sealed class TursoRelayStore : RelayStoreBase {
                 SqlArg.Text("sign_pub_key", bundle.SignPubKey),
                 SqlArg.Text("dh_pub_key", bundle.DhPubKey),
                 SqlArg.Integer("registered_at", bundle.RegisteredAt),
-                SqlArg.Text("display_name", bundle.DisplayName)
+                SqlArg.Text("display_name", bundle.DisplayName),
+                SqlArg.Text("signed_prekey_pub_key", bundle.SignedPrekeyPubKey),
+                SqlArg.Text("signed_prekey_signature", bundle.SignedPrekeySignature),
+                SqlArg.Text("one_time_prekey_id", bundle.OneTimePrekeyId),
+                SqlArg.Text("one_time_prekey_pub_key", bundle.OneTimePrekeyPubKey)
             ],
             cancellationToken);
 
     public override async Task<KeyBundle?> GetKeyBundleAsync(string userId, CancellationToken cancellationToken = default) {
         var rows = await QueryRowsAsync(
             """
-            SELECT user_id, sign_pub_key, dh_pub_key, registered_at, display_name
+            SELECT user_id, sign_pub_key, dh_pub_key, registered_at, display_name,
+                   signed_prekey_pub_key, signed_prekey_signature, one_time_prekey_id, one_time_prekey_pub_key
             FROM key_bundles
             WHERE user_id = @user_id
             LIMIT 1
@@ -805,7 +916,27 @@ sealed class TursoRelayStore : RelayStoreBase {
             AsString(row[1])!,
             AsString(row[2])!,
             AsLong(row[3]),
-            AsString(row[4]) ?? "");
+            AsString(row[4]) ?? "",
+            AsString(row[5]) ?? "",
+            AsString(row[6]) ?? "",
+            AsString(row[7]) ?? "",
+            AsString(row[8]) ?? "");
+    }
+
+    public override async Task<KeyBundle?> TakePrekeyBundleAsync(string userId, CancellationToken cancellationToken = default) {
+        var bundle = await GetKeyBundleAsync(userId, cancellationToken);
+        if (bundle == null) return null;
+        if (!string.IsNullOrWhiteSpace(bundle.OneTimePrekeyId)) {
+            await ExecuteNonQueryAsync(
+                """
+                UPDATE key_bundles
+                SET one_time_prekey_id = '', one_time_prekey_pub_key = ''
+                WHERE user_id = @user_id
+                """,
+                [SqlArg.Text("user_id", userId)],
+                cancellationToken);
+        }
+        return bundle;
     }
 
     public override Task SetPublicDisplayNameAsync(string userId, string displayName, CancellationToken cancellationToken = default) =>
@@ -827,6 +958,21 @@ sealed class TursoRelayStore : RelayStoreBase {
                 "ALTER TABLE key_bundles ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
                 [],
                 cancellationToken);
+        } catch (InvalidOperationException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase) ||
+                                                     ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase)) {
+        }
+    }
+
+    async Task EnsurePrekeyColumnsAsync(CancellationToken cancellationToken) {
+        await TryEnsureColumnAsync("ALTER TABLE key_bundles ADD COLUMN signed_prekey_pub_key TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await TryEnsureColumnAsync("ALTER TABLE key_bundles ADD COLUMN signed_prekey_signature TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await TryEnsureColumnAsync("ALTER TABLE key_bundles ADD COLUMN one_time_prekey_id TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await TryEnsureColumnAsync("ALTER TABLE key_bundles ADD COLUMN one_time_prekey_pub_key TEXT NOT NULL DEFAULT ''", cancellationToken);
+    }
+
+    async Task TryEnsureColumnAsync(string sql, CancellationToken cancellationToken) {
+        try {
+            await ExecuteNonQueryAsync(sql, [], cancellationToken);
         } catch (InvalidOperationException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase) ||
                                                      ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase)) {
         }

@@ -1790,8 +1790,27 @@ public partial class MainWindow : Window {
         // Verify signature (server already checked, client double-checks)
         if (!Crypto.Verify(contact.SignPubKey, $"{payload}:{seq}", sig)) return;
 
-        var msg = Crypto.DecryptDmWithRecipientDh(_user!.DhPrivKey, senderId, payload);
+        if (!Crypto.TryParseDmWireMeta(payload, out var payloadSessionId, out var payloadSeq, out _)) return;
+        if (payloadSeq != seq) {
+            AppLog.Warn("recv", $"direct payload seq mismatch sender={AppTelemetry.MaskUserId(senderId)} relay_seq={seq} payload_seq={payloadSeq}");
+            return;
+        }
+        if (!string.Equals(payloadSessionId, conv.Id, StringComparison.Ordinal)) {
+            AppLog.Warn("recv", $"direct payload session mismatch sender={AppTelemetry.MaskUserId(senderId)} session={AppTelemetry.MaskUserId(payloadSessionId)} conv={AppTelemetry.MaskUserId(conv.Id)}");
+            return;
+        }
+
+        var session = GetOrCreateDmSession(contact);
+        if (session == null) return;
+        var msgKey = _vault.ConsumeIncomingDmMessageKey(conv.Id, senderId, seq, session.RootKey);
+        if (msgKey == null) return;
+        var msg = Crypto.DecryptDmWithMessageKey(msgKey, senderId, payload);
+        Crypto.Wipe(msgKey);
         if (msg == null) return;
+        if (seq > session.LastRecvSeq) {
+            session.LastRecvSeq = seq;
+            _vault.SaveDmSession(session);
+        }
         if (!IsPayloadTimestampAcceptable(msg.Timestamp, ts)) {
             AppLog.Warn("recv", $"direct payload timestamp out of bounds sender={AppTelemetry.MaskUserId(senderId)} seq={seq} relay_ts={ts} payload_ts={msg.Timestamp}");
             msg.Timestamp = ts;
@@ -2379,7 +2398,7 @@ public partial class MainWindow : Window {
             Crypto.Wipe(oldSecret);
         }
 
-        _vault.ClearConvSecret(convId);
+        _vault.ResetDirectRatchetState(convId, contact.UserId);
         contact.SignPubKey = contact.PendingSignPubKey;
         contact.DhPubKey = contact.PendingDhPubKey;
         contact.PendingSignPubKey = [];
@@ -2402,13 +2421,44 @@ public partial class MainWindow : Window {
         } catch { return null; }
     }
 
+    DmSessionState? GetOrCreateDmSession(Contact contact) {
+        var convId = contact.ConversationId ?? contact.UserId;
+        var existing = _vault.LoadDmSession(convId);
+        if (existing != null) return existing;
+
+        var rootKey = GetOrDeriveConvKey(contact);
+        if (rootKey == null) return null;
+
+        var session = new DmSessionState {
+            ConversationId = convId,
+            RemoteUserId = contact.UserId,
+            SessionId = convId,
+            RootKey = rootKey,
+            LastSendSeq = 0,
+            LastRecvSeq = 0
+        };
+        _vault.SaveDmSession(session);
+        return session;
+    }
+
     bool TryPrepareDirectEnvelope(Contact contact, Message message, out string payload, out string sig) {
         payload = "";
         sig = "";
         if (_user == null) return false;
-        var convId = contact.ConversationId ?? contact.UserId;
-        message.SeqNum = _vault.NextSeqNum(convId);
-        payload = Crypto.EncryptDmWithDhRatchet(contact.DhPubKey, message);
+        var session = GetOrCreateDmSession(contact);
+        if (session == null) return false;
+        var allocation = _vault.AllocateOutgoingDmMessageKey(session.ConversationId, session.RootKey);
+        if (allocation == null) return false;
+        message.SeqNum = allocation.Value.seq;
+        payload = Crypto.EncryptDmWithMessageKey(
+            allocation.Value.messageKey,
+            message,
+            Convert.ToBase64String(_user.DhPubKey));
+        Crypto.Wipe(allocation.Value.messageKey);
+        if (message.SeqNum > session.LastSendSeq) {
+            session.LastSendSeq = message.SeqNum;
+            _vault.SaveDmSession(session);
+        }
         sig = Crypto.SignPayload(_user.SignPrivKey, payload, message.SeqNum);
         return true;
     }
